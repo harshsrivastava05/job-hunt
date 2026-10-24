@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job Hunt</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #16181d; --muted: #646b78; --line: #e2e5ea;
+    --accent: #2457d6; --accent-text: #fff; --good: #1a7f43; --bad: #b4232c; --warn-bg: #fff4d6; --warn: #7a5200;
+    --chip: #eef1f5; --sel: #e8efff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111317; --card: #1a1d23; --text: #e8eaee; --muted: #9aa1ad; --line: #2b3038;
+      --accent: #6d95ff; --accent-text: #0d1220; --good: #5fcf8c; --bad: #ff7b84; --warn-bg: #3a2f12; --warn: #ffd27a;
+      --chip: #242830; --sel: #1f2a44;
+    }
+  }
+  :root { color-scheme: light dark; }  /* native controls (file pickers) follow the theme */
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 20px 16px 60px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .status { color: var(--muted); font-size: 13px; }
+  .warn { background: var(--warn-bg); color: var(--warn); padding: 8px 12px; border-radius: 8px; margin-top: 10px; font-size: 14px; }
+  nav { display: flex; gap: 4px; flex-wrap: wrap; margin: 16px 0 12px; border-bottom: 1px solid var(--line); }
+  nav button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; color: var(--muted); font: inherit; cursor: pointer; }
+  nav button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; }
+  .card.sel { outline: 2px solid var(--accent); background: var(--sel); }
+  .top { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+  .title { font-weight: 600; color: var(--text); text-decoration: none; }
+  .title:hover { text-decoration: underline; }
+  .fit { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .meta { color: var(--muted); font-size: 13px; margin: 2px 0 8px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { background: var(--chip); border-radius: 999px; padding: 2px 10px; font-size: 12.5px; }
+  .chip.y::before { content: "✓ "; color: var(--good); font-weight: 700; }
+  .chip.n::before { content: "✗ "; color: var(--bad); font-weight: 700; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  button.b { font: inherit; font-size: 13.5px; padding: 5px 12px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer; }
+  button.b.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button.b:hover { border-color: var(--accent); }
+  .empty { color: var(--muted); padding: 30px 0; text-align: center; }
+  .keys { color: var(--muted); font-size: 12.5px; margin-top: 14px; }
+  kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font-size: 12px; }
+  input[type=search], input[type=number], textarea { font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; }
+  input[type=search] { width: 100%; margin-bottom: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td:last-child { white-space: nowrap; }
+  .err { color: var(--bad); font-size: 12.5px; word-break: break-word; }
+  .tablewrap { overflow-x: auto; }
+  section h2 { font-size: 16px; margin: 0 0 6px; }
+  section p.hint { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  label { display: block; font-size: 13px; color: var(--muted); }
+  label input, label textarea { display: block; width: 100%; margin-top: 4px; }
+  textarea { min-height: 70px; resize: vertical; }
+  .msg { font-size: 13.5px; margin-top: 8px; }
+  .msg.bad { color: var(--bad); } .msg.good { color: var(--good); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Job Hunt</h1>
+  <div class="status" id="status">Loading…</div>
+  <div id="warnings"></div>
+  <nav id="tabs"></nav>
+  <div id="view"></div>
+</main>
+<script>
+const TABS = [["queued", "Queue"], ["opened", "Opened"], ["applied", "Applied"], ["skipped", "Skipped"], ["sources", "Sources"], ["settings", "Settings"]];
+const REASONS = [["skills", "Skills"], ["experience", "Experience"], ["role", "Software role"]];
+let tab = "queued", jobs = [], srcs = null, st = null, sel = 0, srcFilter = "", checking = new Set();
+
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const safeUrl = u => /^https?:\/\//i.test(u || "") ? u : null;  // scraped links: never javascript: or data:
+const ago = ts => {
+  if (!ts) return "never";
+  const m = Math.round((Date.now() - new Date(ts.replace(" ", "T") + "Z")) / 60000);
+  return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+};
+const company = s => (s || "").split(",").join(", ");
+
+async function api(path, body, raw) {
+  const opt = body === undefined ? {} : { method: "POST", headers: { "X-Jobhunt": "1" }, body: raw ? body : JSON.stringify(body) };
+  const r = await fetch(path, opt);
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+
+async function load() {
+  [jobs, st] = await Promise.all([api("/api/jobs"), api("/api/status")]);
+  if (tab === "sources") srcs = await api("/api/sources");
+  render();
+}
+
+function render() {
+  const n = s => jobs.filter(j => j.apply_status === s).length;
+  document.title = n("queued") ? `(${n("queued")}) Job Hunt` : "Job Hunt";
+  const spend = st.usd_per_m != null ? `$${(st.tokens_30d * st.usd_per_m / 1e6).toFixed(2)}` : `${(st.tokens_30d / 1e6).toFixed(1)}M tokens`;
+  document.getElementById("status").textContent =
+    `${st.companies_with_jobs} of ${st.companies} companies listing jobs · checked ${ago(st.last_check)} · ` +
+    `${st.new_24h} new postings in 24 h, ${st.matched_24h} matched · ${st.failing} pages failing · ${spend} in 30 days`;
+  const warn = [];
+  if (!st.provider) warn.push("No decision-model key: add JEV_API_KEY (or OPENAI_API_KEY) to worker/.env and restart the app.");
+  if (!st.resume) warn.push("No resume yet: upload one in Settings so jobs can be judged.");
+  if (st.last_check && Date.now() - new Date(st.last_check.replace(" ", "T") + "Z") > 3 * 3600e3)
+    warn.push(`Nothing checked for ${ago(st.last_check).replace(" ago", "")}: offline, or the app is stuck (see ~/.jobhunt/jobhunt.log).`);
+  document.getElementById("warnings").innerHTML = warn.map(w => `<div class="warn">${esc(w)}</div>`).join("");
+  document.getElementById("tabs").innerHTML = TABS.map(([k, label]) => {
+    const count = ["queued", "opened", "applied", "skipped"].includes(k) ? ` (${n(k)})` : "";
+    return `<button class="${k === tab ? "on" : ""}" data-tab="${k}">${label}${count}</button>`;
+  }).join("");
+  const view = document.getElementById("view");
+  if (tab === "sources") view.innerHTML = sourcesView();
+  else if (tab === "settings") view.innerHTML = settingsView();
+  else view.innerHTML = jobsView();
+}
+
+function jobsView() {
+  const list = jobs.filter(j => j.apply_status === tab);
+  sel = Math.min(sel, Math.max(list.length - 1, 0));
+  if (!list.length) return `<div class="empty">${{ queued: "Queue is empty. New matches show up here as the watcher finds them.", opened: "Nothing opened and waiting.", applied: "No applications yet.", skipped: "Nothing skipped." }[tab]}</div>`;
+  const buttons = {
+    queued: [["opened", "Open ↗", "primary"], ["applied", "Applied"], ["skipped", "Skip"]],
+    opened: [["opened", "Open ↗", "primary"], ["applied", "Applied"], ["skipped", "Skip"], ["queued", "Back to queue"]],
+    applied: [["opened", "Open ↗"], ["queued", "Undo"]],
+    skipped: [["queued", "Restore"]],
+  }[tab];
+  return list.map((j, i) => {
+    const v = j.verdict || {};
+    const chips = REASONS.filter(([k]) => v[k] != null).map(([k, label]) => `<span class="chip ${v[k] >= 0.5 ? "y" : "n"}">${label} ${Math.round(v[k] * 100)}%</span>`).join("");
+    const when = j.posted_at ? `posted ${ago(j.posted_at)}` : `found ${ago(j.first_seen_at)}`;
+    const url = safeUrl(j.url);
+    return `<div class="card ${i === sel ? "sel" : ""}" data-i="${i}">
+      <div class="top"><a class="title" ${url ? `href="${esc(url)}"` : ""} target="_blank" rel="noopener" data-act="opened" data-id="${j.id}">${esc(j.title)}</a>
+        <span class="fit" title="Fit: the model's probability you'd pass resume screening">${j.score ?? "–"}%</span></div>
+      <div class="meta">${esc(company(j.company))} · ${esc(j.location || "location not stated")} · ${when}${j.applied_at ? ` · applied ${ago(j.applied_at)}` : ""}</div>
+      <div class="chips">${chips}</div>
+      <div class="actions">${buttons.map(([s, label, cls]) => `<button class="b ${cls || ""}" data-act="${s}" data-id="${j.id}">${label}</button>`).join("")}</div>
+    </div>`;
+  }).join("") + `<div class="keys"><kbd>j</kbd>/<kbd>k</kbd> move · <kbd>o</kbd> open · <kbd>a</kbd> applied · <kbd>s</kbd> skip · <kbd>u</kbd> back to queue</div>`;
+}
+
+function sourcesView() {
+  if (!srcs) return `<div class="empty">Loading…</div>`;
+  const q = srcFilter.toLowerCase();
+  const rows = srcs.filter(s => !q || (s.company + " " + s.url + " " + (s.ats || "")).toLowerCase().includes(q));
+  return `<input type="search" id="srcq" placeholder="Filter ${srcs.length} career pages by company, link or board…" value="${esc(srcFilter)}">
+    <div class="tablewrap"><table><tr><th>Company</th><th>Board</th><th class="num">Jobs</th><th>Checked</th><th></th></tr>
+    ${rows.map(s => `<tr>
+      <td><a href="${esc(safeUrl(s.url) || "#")}" target="_blank" rel="noopener">${esc(company(s.company))}</a>
+        ${s.fail_count ? `<div class="err">failing ×${s.fail_count}: ${esc(s.last_error)}</div>` : ""}${s.active ? "" : `<div class="err">paused</div>`}</td>
+      <td>${esc(s.ats || "not classified yet")}</td>
+      <td class="num">${s.listed}</td>
+      <td>${ago(s.last_ok_at)}</td>
+      <td><button class="b" data-src="${s.id}" data-check="1">${checking.has(s.id) ? "Checking within a minute" : "Check now"}</button>
+          <button class="b" data-src="${s.id}" data-active="${s.active ? 0 : 1}">${s.active ? "Pause" : "Resume"}</button></td>
+    </tr>`).join("")}</table></div>`;
+}
+
+function settingsView() {
+  const s = st.settings;
+  const num = (k, label, hint) => `<label>${label}<input type="number" id="set-${k}" value="${esc(s[k])}"><span>${hint}</span></label>`;
+  return `
+  <section class="card"><h2>Resume</h2>
+    <p class="hint">Jobs are judged against this. Uploading a new one re-judges the last few days' jobs you haven't acted on.</p>
+    <div>${st.resume ? `Current: <b>${esc(st.resume.filename)}</b> (uploaded ${ago(st.resume.uploaded_at)})` : "No resume yet."}</div>
+    <div class="actions"><input type="file" id="resume" accept=".pdf,.txt"><button class="b primary" data-upload="resume">Upload</button></div>
+    <div class="msg" id="msg-resume"></div></section>
+  <section class="card"><h2>Add companies</h2>
+    <p class="hint">A .csv or .xlsx with columns <b>company_name</b>, <b>careers_url</b> and optionally <b>city</b>. Safe to re-upload: existing rows are left alone and a changed link moves the company. New pages are checked within a minute.</p>
+    <div class="actions"><input type="file" id="import" accept=".csv,.xlsx"><button class="b primary" data-upload="import">Import</button></div>
+    <div class="msg" id="msg-import"></div></section>
+  <section class="card"><h2>Matching</h2>
+    <p class="hint">Changes apply to jobs already judged on the watcher's next pass (within a minute), without new model calls.</p>
+    <div class="grid">
+      ${num("min_score", "Fit cutoff (%)", "Queue a software job at or above this fit, or with an 80%+ skills match.")}
+      ${num("max_age_days", "Ignore jobs older than (days)", "Older postings are never sent to the model.")}
+      ${num("retention_days", "Forget jobs after (days)", "Applied jobs are always kept.")}
+      ${num("interval_min", "Check each page every (minutes)", "Browser-rendered pages: twice this.")}
+    </div>
+    <div class="grid" style="margin-top:12px">
+      <label>Title must include one of (comma-separated)<textarea id="set-title_include">${esc(s.title_include.join(", "))}</textarea></label>
+      <label>Skip titles containing (comma-separated)<textarea id="set-title_exclude">${esc(s.title_exclude.join(", "))}</textarea></label>
+    </div>
+    <div class="actions"><button class="b primary" data-save="1">Save</button></div>
+    <div class="msg" id="msg-settings"></div></section>
+  <p class="status">Model: ${esc(st.provider || "none")} · Data: ${esc(st.db)}</p>`;
+}
+
+function flash(id, text, good) {
+  const el = document.getElementById(id);
+  if (el) { el.textContent = text; el.className = `msg ${good ? "good" : "bad"}`; }
+}
+
+async function setStatus(id, s) {
+  const j = jobs.find(x => x.id === id);
+  if (!j || j.apply_status === s || (s === "opened" && j.apply_status !== "queued")) return;
+  await api(`/api/jobs/${id}`, { apply_status: s });
+  j.apply_status = s;
+  if (s === "applied") j.applied_at = new Date().toISOString().slice(0, 19).replace("T", " ");
+  render();
+}
+
+document.addEventListener("click", async e => {
+  const t = e.target.closest("[data-tab],[data-act],[data-src],[data-upload],[data-save]");
+  if (!t) return;
+  try {
+    if (t.dataset.tab) { tab = t.dataset.tab; sel = 0; if (tab === "sources") srcs = await api("/api/sources"); render(); }
+    else if (t.dataset.act) {
+      const j = jobs.find(x => x.id === +t.dataset.id);
+      if (t.dataset.act === "opened" && t.tagName !== "A") { const u = safeUrl(j.url); if (u) window.open(u, "_blank", "noopener"); }
+      await setStatus(+t.dataset.id, t.dataset.act);
+    }
+    else if (t.dataset.src) {
+      const body = t.dataset.check ? { check: true } : { active: !!+t.dataset.active };
+      await api(`/api/sources/${t.dataset.src}`, body);
+      if (t.dataset.check) checking.add(+t.dataset.src);
+      srcs = await api("/api/sources");
+      render();
+    }
+    else if (t.dataset.upload) {
+      const kind = t.dataset.upload, file = document.getElementById(kind).files[0];
+      if (!file) return flash(`msg-${kind}`, "Choose a file first.");
+      flash(`msg-${kind}`, "Uploading…", true);
+      const r = await api(`/api/${kind}?name=${encodeURIComponent(file.name)}`, await file.arrayBuffer(), true);
+      st = await api("/api/status");
+      render();
+      flash(`msg-${kind}`, r.message, true);
+    }
+    else if (t.dataset.save) {
+      const body = {};
+      for (const k of ["min_score", "max_age_days", "retention_days", "interval_min"]) body[k] = Number(document.getElementById(`set-${k}`).value);
+      for (const k of ["title_include", "title_exclude"]) body[k] = document.getElementById(`set-${k}`).value.split(",").map(w => w.trim()).filter(Boolean);
+      await api("/api/settings", body);
+      st = await api("/api/status");
+      render();
+      flash("msg-settings", "Saved. The queue updates on the watcher's next pass.", true);
+    }
+  } catch (err) {
+    const id = t.dataset.upload ? `msg-${t.dataset.upload}` : t.dataset.save ? "msg-settings" : null;
+    id ? flash(id, err.message) : alert(err.message);
+  }
+});
+
+document.addEventListener("input", e => {
+  if (e.target.id === "srcq") {
+    srcFilter = e.target.value;
+    const pos = e.target.selectionStart;
+    render();
+    const box = document.getElementById("srcq");
+    box.focus(); box.setSelectionRange(pos, pos);
+  }
+});
+
+document.addEventListener("keydown", e => {
+  if (["INPUT", "TEXTAREA"].includes(document.activeElement.tagName) || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (!["queued", "opened", "applied", "skipped"].includes(tab)) return;
+  const list = jobs.filter(j => j.apply_status === tab), j = list[sel];
+  if (e.key === "j") sel = Math.min(sel + 1, list.length - 1);
+  else if (e.key === "k") sel = Math.max(sel - 1, 0);
+  else if (!j) return;
+  else if (e.key === "o") { const u = safeUrl(j.url); if (u) window.open(u, "_blank", "noopener"); setStatus(j.id, "opened"); return; }
+  else if (e.key === "a") return setStatus(j.id, "applied");
+  else if (e.key === "s") return setStatus(j.id, "skipped");
+  else if (e.key === "u") return setStatus(j.id, "queued");
+  else return;
+  render();
+  document.querySelector(".card.sel")?.scrollIntoView({ block: "nearest" });
+});
+
+// refresh every minute, unless you're typing in a form
+setInterval(() => { if (!["INPUT", "TEXTAREA"].includes(document.activeElement.tagName) && tab !== "settings") load().catch(() => {}); }, 60000);
+load().catch(err => { document.getElementById("status").textContent = `Can't reach the app: ${err.message}`; });
+</script>
+</body>
+</html>
