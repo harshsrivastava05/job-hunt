@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from jobhunt.ats import Job
 from jobhunt.db import connect
-from jobhunt.generic import canon, heuristic_jobs, job_links, parse
+from jobhunt.generic import AGGREGATOR, canon, heuristic_jobs, job_links, parse
 from jobhunt.worker import save
 
 CFG = {"interval_min": 60, "max_age_days": 3}
@@ -86,6 +86,16 @@ def test_card_links_take_the_heading_as_title():
         ("https://acme.com/careers/openings", "View open positions"),  # informative link text is left alone
         ("https://acme.com/jobs/sde-ii", "SDE II"),  # whole card as one link: first line is the title
     ]
+
+
+def test_titles_from_job_urls_and_junk_links():
+    page = parse("https://acme.com/careers", """
+      <div><span>30-Jan-2026</span><a href="/jobs/senior-backend-engineer-4521">Apply</a></div>
+      <div><span>Full Time</span><a href="/jobs/data-analyst_2/">View</a></div>
+      <div><span>Hyderabad</span><a href="/jobs/8812">Apply</a></div>
+      <a href="https://x.com/intent/tweet?url=acme">X</a>""")
+    assert [t for _, t in page.links] == ["Senior Backend Engineer", "Data Analyst", "Hyderabad", "X"]  # no slug to use: unchanged
+    assert AGGREGATOR.search("x.com") and AGGREGATOR.search("www.facebook.com") and not AGGREGATOR.search("x.company.com")
 
 
 def test_canon_and_aggregators():

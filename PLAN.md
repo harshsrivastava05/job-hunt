@@ -118,16 +118,18 @@ New jobs pass through gates, cheapest first. Only the survivors cost money:
 1. **Age**: `posted_at` > 3 days → `stale`
 2. **Title**: include/exclude keywords (suggested from your resume, editable). "Member of Technical Staff"/MTS passes; senior/lead/manager/principal titles don't.
 3. **Dedupe**: same company + normalized title already judged this week
-4. **Fetch JD** if the list API didn't include it (trimmed to ~8k chars)
+4. **Fetch JD** (`judge.describe`, trimmed to ~8k chars). A list's text counts only if it's ≥ 400 chars; Oracle HCM and Phenom lists are always summaries. Then the board's detail API (Workday, SmartRecruiters, Oracle HCM), else the job page (Phenom's embedded job data, JSON-LD `JobPosting`, page text), rendered in a browser if it's JS-only.
 5. **Verdict**: one **decision-model** call (`jobhunt/decide.py`). No text-generating LLM anywhere.
 
    - **Provider:** TypeSafe **Jev** (`POST api.typesafe.ai/v1/systemone`, model `jev-latest`) by default. OpenAI **Decisions API** (`POST /v1/decisions`, `gpt-6-luna`) is the fallback via `DECISION_PROVIDER=openai`.
    - **Input:** `state` = rubric + resume, then the job (title, company, location, description).
-   - **Questions:** five yes/no ("noul") questions, each returning a probability:
-     - `fit` (realistic applicant, likely to pass screening?) decides.
+   - **Questions:** six yes/no ("noul") questions, each returning a probability:
+     - `fit`: credible applicant, **leaving aside experience asks of up to 3 years** (your rule, 2026-10-24).
      - `skills`, `experience` and `role` are the ✓/✗ reasons shown on the queue card.
+     - `experience`: "open to someone with under 4 years?" Measured on real JDs: asks of 4+ years ≤ 0.07; 0–3 years, internships and unstated ≥ 0.77.
      - `india` (based in India or remote-open-to-India?) drops foreign jobs from company pages that show no location. Measured: abroad ≤ 0.31, India ≥ 0.94.
-   - **Queue rule** (`judge.wanted`): `role ≥ 50%` and (`fit ≥ min_score` (35%) or `skills ≥ 80%`) → `matched`, `apply_status = queued`. The skills clause catches strong matches that only fall short on years asked for. The role clause keeps out non-software jobs.
+     - `posting` (one specific job, not a list/category page?) drops category pages that read like roles. Measured: category ≤ 0.11, real postings ≥ 0.55.
+   - **Queue rule** (`judge.wanted`): `role ≥ 50%`, `experience ≥ 50%`, `india ≥ 50%`, `posting ≥ 30%`, and (`fit ≥ min_score` (35%) or `skills ≥ 80%`) → `matched`, `apply_status = queued`.
    - **Settings are live:** each pass re-applies the queue rule to stored probabilities and reopens filtered jobs the gates now allow. Changing the cutoff or keyword lists costs no model calls.
    - **Stored:** all four probabilities in `jobs.verdict`.
    - **OpenAI only:** the resume is sent as a separate developer message, which gets cache hits (~1,040 cached tokens per call). Jev has no cache, and doesn't need one at its price.
@@ -242,6 +244,28 @@ New jobs pass through gates, cheapest first. Only the survivors cost money:
   - if the app isn't answering, start the login task and wait for it; else open the page;
   - with no task installed, the shortcut's own process becomes the app.
   - Tested: stopped service → shortcut → running in 5 s, no second copy.
+
+### Phase 8: Audit of every page + expansion (2026-10-24, done)
+- **What reaches Jev:**
+  - **Problem:** Oracle HCM jobs were judged on a median **39-char** summary (34/51 under 300 chars); Phenom on ~400-char teasers; JS-only company pages on near-empty text.
+  - **Fix:** `describe()` now fetches the real JD (Oracle HCM details API, Phenom page data, JSON-LD, browser render).
+  - **Re-judge:** 70 jobs. E.g. Zensar Python Developer 45% → 5% (asks 6+ yrs Python, 2+ GenAI), Honeywell Software Engr II 38% → 2%.
+- **Category pages:** EPAM's "Software Developer Jobs" (a category page) passed both Jev steps. Added the `posting` question; it was backfilled on all matched jobs.
+- **Experience rule (your call):** up to 3 years OK, 4+ blocked. 333 jobs from the last 7 days re-judged ($0.04). Queue: 9 → 24, every one under 4 years.
+- **Company-built pages with jobs (174), judged title by title.** Fixed:
+  - titles taken from dates, cities or "Full Time" next to a bare "Apply" now come from the job URL's slug;
+  - "share on X" links are no longer jobs;
+  - `{{record.Posting_Title}}` template text is dropped;
+  - Zoho Recruit on the company's own domain is detected (HealthPlix, Yellow.ai, Zoho).
+- **Pages listing 0 jobs (153):**
+  - 24 are boards with no India jobs right now (fine).
+  - Of the 129 company pages, an automated sweep found and verified a better route for **19**: Databricks, Datadog, Crunchyroll (Greenhouse); Saviynt (Lever); OakNorth, Redis (Ashby); Lam Research, Autodesk, TriNet, HP, Amdocs (Eightfold on their own domains, now auto-detected); Publicis (iCIMS); Providence (SuccessFactors); Vymo (Darwinbox); Postman (Workday); Tiger Analytics, Livspace, Chai Point, Aereo (company pages).
+  - Most of the rest have no openings, are pharma/hospital/brand pages, or are bot-blocked.
+- **Expansion:**
+  - 199 companies from your `new_careers_found` CSV (183/190 pages work).
+  - 110 watchlist companies that had a seed URL (Adobe, Accenture, Cisco, Flipkart, Freshworks…).
+  - **257 startups** whose careers page was found automatically: directory website → careers link → verified.
+  - **Not found:** 401 startups. 232 have no careers page, 103 have no website listed, 66 sites were down or blocking.
 
 ### Oracle move (later, optional)
 - **Hosting check (2026-10-24, measured):** Oracle vs your laptop, same requests to every crawl target.

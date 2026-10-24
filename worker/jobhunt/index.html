@@ -75,7 +75,7 @@
 </main>
 <script>
 const TABS = [["queued", "Queue"], ["opened", "Opened"], ["applied", "Applied"], ["skipped", "Skipped"], ["sources", "Sources"], ["settings", "Settings"]];
-const REASONS = [["skills", "Skills"], ["experience", "Experience"], ["role", "Software role"]];
+const REASONS = [["skills", "Skills"], ["experience", "Under 4 yrs asked"], ["role", "Software role"]];
 let tab = "queued", jobs = [], srcs = null, st = null, sel = 0, srcFilter = "", checking = new Set();
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);

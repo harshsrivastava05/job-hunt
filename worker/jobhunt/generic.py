@@ -8,7 +8,7 @@ import html
 import json
 import re
 from html.parser import HTMLParser
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
 
@@ -18,9 +18,11 @@ from jobhunt.ats import Job, in_india, parse_dt
 TRACKING = re.compile(
     r"^(utm_|gclid$|fbclid$|_gl$|_ga$|mc_|ref$|refid$|source$|src$|trk|trackingid$|sessionid$|jsessionid$|gh_src$|lever-)", re.I
 )
-# never anchor a source to these: the user wants company boards, and their pages mix in other companies' jobs
+# never anchor a source to these: the user wants company boards, and their pages mix in other companies' jobs.
+# Social sites too: a job card's "share on X" button is not a job.
 AGGREGATOR = re.compile(
-    r"(^|\.)(linkedin|naukri|indeed|glassdoor|wellfound|angel|instahyre|cutshort|iimjobs|foundit|monster|hirist|internshala)\.", re.I
+    r"(^|\.)(linkedin|naukri|indeed|glassdoor|wellfound|angel|instahyre|cutshort|iimjobs|foundit|monster|hirist|internshala"
+    r"|facebook|instagram|twitter|x|youtube|whatsapp|wa|t|pinterest|reddit)\.(com|me|in|co)$", re.I
 )
 JOBISH = re.compile(
     r"open (positions|roles)|openings|vacanc|view (all )?(jobs|roles|openings|positions)|see (all )?(jobs|openings|roles)"
@@ -75,7 +77,10 @@ class Page(HTMLParser):
             if (not text or GENERIC_LINK.match(text)) and self._recent:  # "Apply" under a "Backend Engineer" heading
                 text = next((t for t in reversed(self._recent) if ROLE.search(t)), self._recent[-1])
             if href and not href.startswith(("#", "mailto:", "tel:", "javascript:")):
-                self.links.append((canon(urljoin(self.base, href)), text))
+                url = canon(urljoin(self.base, href))
+                if not ROLE.search(text):  # the text near a bare "Apply" was a date, city or "Full Time": the URL often names the role
+                    text = _slug_title(url) or text
+                self.links.append((url, text))
             self._href = None
         elif tag == self._skip:
             if self._script is not None:
@@ -92,6 +97,14 @@ class Page(HTMLParser):
             self._atext.append(data)
         elif data.strip():
             self._recent = (self._recent + [" ".join(data.split())])[-3:]  # title / location / team above a link
+
+
+def _slug_title(url):
+    """'/jobs/senior-backend-engineer-4521' -> 'Senior Backend Engineer', only when that reads like a role."""
+    words = [w for w in re.split(r"[-_+]", unquote(urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1]).split(".")[0])
+             if w and not re.fullmatch(r"\d+|[0-9a-f]{8,}|[a-z]{0,2}\d+\w*", w, re.I)]
+    title = " ".join(w if w.isupper() else w.capitalize() for w in words)
+    return title if len(words) >= 2 and ROLE.search(title) else None
 
 
 def parse(base, page_html, into=None):
@@ -198,7 +211,7 @@ def decided_jobs(p):
     host = urlsplit(p.base).netloc
     items = [
         (u, t) for u, t in dict.fromkeys(p.links)
-        if t and len(t.split()) <= 16 and not NAV.match(t) and not AGGREGATOR.search(urlsplit(u).netloc)
+        if t and len(t.split()) <= 16 and not NAV.match(t) and not AGGREGATOR.search(urlsplit(u).netloc) and "{{" not in t  # unrendered template
     ][:300]
     titled = {t.lower() for _, t in items}
     items += [

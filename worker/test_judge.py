@@ -70,7 +70,7 @@ def test_settings_apply_without_rejudging():
     conn.execute("INSERT INTO sources (id, url) VALUES (1, 'https://x.com')")
     conn.execute("INSERT INTO resumes (filename, text) VALUES ('cv', 'python')")
     conn.execute("UPDATE settings SET value = '35' WHERE key = 'min_score'")
-    v = lambda fit, skills, role: json.dumps({"fit": fit, "skills": skills, "experience": 0.4, "role": role})
+    v = lambda fit, skills, role, exp=0.9: json.dumps({"fit": fit, "skills": skills, "experience": exp, "role": role})
     for i, title, status, applied, verdict in [
         (1, "Python Developer", "rejected", None, v(0.45, 0.64, 0.97)),        # over the cutoff: queued
         (2, "AI/ML Data Science", "rejected", None, v(0.31, 0.88, 0.96)),      # strong skills match: queued
@@ -79,7 +79,8 @@ def test_settings_apply_without_rejudging():
         (5, "Web Developer II", "matched", "applied", v(0.20, 0.30, 0.90)),    # the user's: untouched
         (6, "Backend Engineer", "filtered", None, '{"gate": "location"}'),     # reopened, then judged
         (7, "Infra Engineer", "rejected", None, json.dumps({"fit": 0.6, "skills": 0.9, "role": 0.9, "india": 0.3})),  # abroad: stays out
-        (8, "Software Developer Jobs", "matched", "queued", json.dumps({"fit": 0.61, "skills": 0.73, "role": 0.91, "posting": 0.07})),  # a category page: leaves
+        (8, "Software Developer Jobs", "matched", "queued", json.dumps({"fit": 0.61, "skills": 0.73, "role": 0.91, "experience": 0.9, "posting": 0.07})),  # category page
+        (9, "Data Engineer III", "rejected", None, v(0.8, 0.9, 0.95, exp=0.05)),  # asks 4+ years: stays out however well it fits
     ]:
         conn.execute("INSERT INTO jobs (id, source_id, external_id, url, title, location, first_seen_at, last_seen_at, status, apply_status, verdict)"
                      " VALUES (?, 1, ?, 'u', ?, 'Pune', ?, ?, ?, ?, ?)", (i, str(i), title, now(UTC), now(UTC), status, applied, verdict))
@@ -88,7 +89,7 @@ def test_settings_apply_without_rejudging():
     assert judge_pending(conn) == 1
     got = {r[0]: tuple(r[1:]) for r in conn.execute("SELECT id, status, apply_status FROM jobs")}
     assert got == {1: ("matched", "queued"), 2: ("matched", "queued"), 3: ("rejected", None), 4: ("rejected", None),
-                   5: ("matched", "applied"), 6: ("matched", "queued"), 7: ("rejected", None), 8: ("rejected", None)}, got
+                   5: ("matched", "applied"), 6: ("matched", "queued"), 7: ("rejected", None), 8: ("rejected", None), 9: ("rejected", None)}, got
 
 
 if __name__ == "__main__":

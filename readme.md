@@ -10,8 +10,8 @@ A personal job watcher. It checks a few hundred company career pages every hour,
    - **Anything else** goes to a generic reader: JSON-LD first, else the decision model picks out which links on the page are job openings. JavaScript-only pages are rendered in headless Chromium.
    - **India only.** Every source is filtered to jobs in India.
 3. **Cursor.** Every job a source has listed is remembered, so a job is processed once. The first check of a source is a baseline: jobs already open aren't judged unless they were posted in the last 3 days. An unchanged page costs nothing.
-4. **Free filters, then the model.** New jobs are dropped for free if older than 3 days, if the title doesn't match the include/exclude keywords, or if it's a repost. The rest go to [TypeSafe Jev](https://typesafe.ai) (or OpenAI's Decisions API) with the resume. It returns five yes/no probabilities: `fit`, `skills`, `experience`, `role` (hands-on software role) and `india`.
-5. **Queue.** A job is queued when it's a software role in India and either fit ≥ the cutoff (35% by default) or the skills match is ≥ 80%. A Windows notification goes out for new matches.
+4. **Free filters, then the model.** New jobs are dropped for free if older than 3 days, if the title doesn't match the include/exclude keywords, or if it's a repost. The rest go to [TypeSafe Jev](https://typesafe.ai) (or OpenAI's Decisions API) with the resume. It returns six yes/no probabilities: `fit`, `skills`, `experience` (open to under 4 years?), `role` (hands-on software role), `india` and `posting` (one real job, not a category page).
+5. **Queue.** A job is queued when it's a single software posting in India that asks for under 4 years of experience, and either fit ≥ the cutoff (35% by default) or the skills match is ≥ 80%. The full job description is always fetched first: summaries and teasers from job lists don't count. A Windows notification goes out for new matches.
 6. **Housekeeping.** Once a day the app removes jobs older than 7 days and keeps the last 7 daily backups.
 
 ## Setup (Windows)

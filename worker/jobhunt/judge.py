@@ -20,11 +20,14 @@ from jobhunt import ats, decide, generic
 from jobhunt.db import DB_PATH, connect, now
 
 RUBRIC = "You screen job postings for one candidate and judge only from the candidate's resume."
-QUESTIONS = {  # 'fit' decides; the rest are the reasons shown on the queue card
-    "fit": "Is the candidate a realistic applicant for this job who would likely pass resume screening? "
-           "Weigh the required years of experience, core skills, seniority and the type of role.",
+QUESTIONS = {  # see wanted() for how they combine; skills/experience/role are the reasons shown on the queue card
+    # the user applies to jobs asking up to 3 years, so fit must not mark those down; 4+ years is the experience gate's job
+    "fit": "Leaving aside any experience requirement of up to 3 years, is the candidate a credible applicant for this job: "
+           "do their skills, projects and education match what the role needs?",
     "skills": "Does the candidate's resume show most of the core skills this job asks for?",
-    "experience": "Does the candidate meet this job's experience requirement?",
+    # measured on real JDs: asks of 4+ years <= 0.07; 0-3 years, internships and unstated >= 0.77
+    "experience": "Is this job open to someone with less than 4 years of work experience? Yes if it asks for 0-3 years, is entry-level "
+                  "or an internship, or doesn't say; no if it asks for 4 or more years or is a senior or lead role.",
     "role": "Is this a hands-on software role (backend, full-stack, AI/ML or data engineering)?",
     # company pages often show no location, so global companies' foreign jobs get this far (measured: abroad <= 0.31, India >= 0.94)
     "india": "Is this job based in India, or remote and open to candidates who live in India?",
@@ -53,11 +56,12 @@ def gate(row, cfg, utc):
 
 
 def wanted(p, min_score):
-    """The queue rule. fit is the model's overall call; a strong skills match is queued even with a low fit (it's
-    usually only the years asked for, and the user applies to those); role keeps out non-software jobs, india foreign
-    ones, posting category/list pages (verdicts from before a question was added don't have it, and pass)."""
+    """The queue rule. fit is the model's overall call, and a strong skills match is queued even with a low fit.
+    Blocked regardless: jobs asking 4+ years (experience), non-software jobs (role), foreign ones (india), category or
+    list pages (posting; verdicts from before that question was added don't have it, and pass)."""
     return (
         (p.get("role") or 0) >= 0.5
+        and (p.get("experience") or 0) >= 0.5
         and (p.get("india") is None or p["india"] >= 0.5)
         and (p.get("posting") is None or p["posting"] >= 0.3)
         and ((p.get("fit") or 0) * 100 >= min_score or (p.get("skills") or 0) >= 0.8)
@@ -79,23 +83,59 @@ def resettle(conn, cfg, utc):
                 conn.execute("UPDATE jobs SET status = ?, apply_status = ? WHERE id = ?", ("matched", "queued", r["id"]) if want else ("rejected", None, r["id"]))
 
 
+def _text(url, raw):
+    return " ".join(" ".join(generic.parse(url, raw).text).split())
+
+
+def _from_page(url, page_html):
+    """The description inside a job page: Phenom's embedded job data, else a JSON-LD JobPosting, else the whole page."""
+    m = re.search(r"phApp\.ddo\s*=\s*(\{.*?\});\s*phApp\.", page_html, re.S)
+    if m:
+        try:
+            job = ((json.loads(m[1]).get("jobDetail") or {}).get("data") or {}).get("job") or {}
+            if job.get("description"):
+                return job["description"]
+        except ValueError:
+            pass
+    posting = [j for j in generic.jsonld_jobs(generic.parse(url, page_html)) if j.description]
+    return posting[0].description if posting else page_html
+
+
 def describe(row):
-    """Job description as plain text: from the list API, else the board's detail API, else the job page."""
-    raw = row["description"] or ""
+    """Job description as plain text, up to 8000 chars. What the list gave counts only if it's a real description:
+    Oracle HCM and Phenom lists carry one-line summaries, and judging on those is judging on the title.
+    Then the board's detail API, else the job page (rendered in a browser if it's JS-only)."""
+    listed = _text(row["url"], row["description"] or "")
+    if len(listed) >= 400 and row["ats"] not in ("oraclehcm", "phenom"):  # those two lists only ever carry a summary
+        return listed[:8000]
+    raw = ""
     try:
         with ats.client() as c:
-            if not raw and row["ats"] == "workday":
+            if row["ats"] == "workday":
                 host, tenant, site = row["ats_key"].split("|")
                 raw = ats._json(c, "GET", f"https://{host}/wday/cxs/{tenant}/{site}{row['external_id']}")["jobPostingInfo"].get("jobDescription", "")
-            elif not raw and row["ats"] == "smartrecruiters":
+            elif row["ats"] == "smartrecruiters":
                 ad = ats._json(c, "GET", f"https://api.smartrecruiters.com/v1/companies/{row['ats_key']}/postings/{row['external_id']}")["jobAd"]
                 raw = " ".join((s or {}).get("text", "") for s in (ad.get("sections") or {}).values())
-            elif not raw:
+            elif row["ats"] == "oraclehcm":
+                host, site = row["ats_key"].split("|")
+                params = {"expand": "all", "onlyData": "true", "finder": f'ById;Id="{row["external_id"]}",siteNumber={site}'}
+                it = (ats._json(c, "GET", f"https://{host}/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails", params=params).get("items") or [{}])[0]
+                raw = " ".join(it.get(k) or "" for k in ("ExternalDescriptionStr", "ExternalResponsibilitiesStr", "ExternalQualificationsStr"))
+            else:
                 r = c.get(row["url"])
-                raw = r.text if r.status_code < 400 else ""
+                raw = _from_page(str(r.url), r.text) if r.status_code < 400 else ""
     except (httpx.HTTPError, KeyError, ValueError):
-        pass  # judged on title, company and location alone
-    return " ".join(" ".join(generic.parse(row["url"], raw).text).split())[:8000]
+        pass
+    text = _text(row["url"], raw)
+    if len(text) < 300 and row["ats"] in ("generic", "generic_js"):  # a JS-only job page: let a browser render it
+        try:
+            p, _ = generic.fetch(row["url"], js=True)
+            posting = [j for j in generic.jsonld_jobs(p) if j.description]
+            text = _text(row["url"], posting[0].description) if posting else " ".join(generic._lines(p))
+        except Exception:  # browser failed: what we have will do
+            pass
+    return (text if len(text) > len(listed) else listed)[:8000]  # worst case: title, company and location alone
 
 
 def _judge(row, resume):

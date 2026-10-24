@@ -597,6 +597,7 @@ PATTERNS = [
     ("darwinbox", r"(?<![\w-])([\w-]+\.darwinbox\.(?:in|com))/ms/candidate"),
     ("kula", r"careers\.kula\.ai/([\w-]+)"),
     ("zoho", r"(?<![\w-])([\w-]+\.zohorecruit\.(?:in|com|eu))/jobs/careers"),
+    ("zoho", r"(?<![\w.-])((?:[\w-]+\.)+[a-z]{2,})/jobs/Careers\b"),  # Zoho Recruit on the company's own domain (capital C is Zoho's)
     ("freshteam", r"(?<![\w-])([\w-]+\.freshteam\.com)/(?:jobs|hire)"),
     ("pyjamahr", r"pyjamahr\.com/[^\s\"'<>]*?company_uuid=(\w+)", "company_uuid={}"),
     ("pyjamahr", r"jobs\.pyjamahr\.com/([\w-]+)", "company_slug={}"),
@@ -606,6 +607,7 @@ PATTERNS = [
     ("oraclehcm", r"(?<![\w-])([\w-]+\.fa\.[\w-]+\.oraclecloud\.com)(?::443)?/hcmUI/CandidateExperience/[\w-]+/sites/([\w-]+)"),
     ("oraclehcm", r"(?<![\w-])([\w-]+\.fa\.[\w-]+\.oraclecloud\.com)"),  # site number looked up below
     ("eightfold", r"(?<![\w-])([\w-]+\.eightfold\.ai)"),  # domain looked up below
+    ("eightfold", r"(?<![\w.-])((?:[\w-]+\.)+[a-z]{2,})/careers\?(?:[^\s\"'<>]*&(?:amp;)?)?pid=\d"),  # on the company's own domain
     ("phenom", r"cdn\.phenompeople\.com/CareerConnectResources/(?:pp/)?\w+/([a-z]{2}_[a-z]+)/"),  # origin = the page
     ("successfactors", r"rmkcdn\.successfactors\.com|jobs2web\.com"),  # SuccessFactors career site builder; key = the page
     ("icims", r"app\.jibecdn\.com"),  # iCIMS careers-home; key = the page
@@ -631,7 +633,8 @@ def detect(final_url, page):
     for (_, _, ats, key), _n in sorted(found.items(), key=lambda kv: (kv[0][0], kv[0][1], -kv[1])):
         if ats == "eightfold":
             dom = re.search(re.escape(key) + r"/[^\s\"'<>]*?[?&]domain=([\w-]+(?:\.[\w-]+)+)", hay, re.I)
-            key = f"{key}|{dom[1] if dom else key.split('.')[0] + '.com'}"
+            default = key.split(".")[0] + ".com" if key.endswith(".eightfold.ai") else ".".join(key.split(".")[-2:])
+            key = f"{key}|{dom[1] if dom else default}"
         elif ats == "oraclehcm" and "|" not in key:
             site = re.search(r"siteNumber[\"'=:\s]+([\w-]+)", hay)
             key = f"{key}|{site[1] if site else 'CX_1'}"

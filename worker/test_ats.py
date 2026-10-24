@@ -30,6 +30,8 @@ def test_detect_key_shapes():
         "https://eofe.fa.us2.oraclecloud.com:443/hcmUI/CandidateExperience/en/sites/BNY-Careers/jobs": ("oraclehcm", "eofe.fa.us2.oraclecloud.com|BNY-Careers"),
         "https://x.fa.ocs.oraclecloud.com:443/hcmUI/CandidateExperience/images?id=1": ("oraclehcm", "x.fa.ocs.oraclecloud.com|CX_1"),
         "https://join.smartrecruiters.com/Experian/59c5-join-our-community": ("smartrecruiters", "Experian"),
+        '<a href="https://careers.zohocorp.com/jobs/Careers/123/x">': ("zoho", "careers.zohocorp.com"),
+        "https://apply.hp.com/careers?start=0&pid=44240108&sort_by=timestamp": ("eightfold", "apply.hp.com|hp.com"),
     }
     for page, want in cases.items():
         assert detect("https://example.com/careers", page)[:1] == [want], (page, detect("https://example.com/careers", page))
