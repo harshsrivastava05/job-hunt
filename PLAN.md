@@ -134,7 +134,7 @@ New jobs pass through gates, cheapest first. Only the survivors cost money:
    - **Stored:** all four probabilities in `jobs.verdict`.
    - **OpenAI only:** the resume is sent as a separate developer message, which gets cache hits (~1,040 cached tokens per call). Jev has no cache, and doesn't need one at its price.
 
-**Company-built pages:** the same decision model classifies a changed page's links (titled by their text, or the heading above a bare "Apply"), plus short role-like text lines: "is item N an individual job opening?" (≥ 0.6).
+**Company-built pages:** the same decision model classifies a changed page's links (titled by their text, or the heading above a bare "Apply"), plus short role-like text lines: "is item N an individual job opening?" (≥ 0.6). Each link's answer is kept in `link_answers`, so a changed page only asks about its new links. Before that, re-asking every link on each change was ~80% of the bill: about 5% of company-page checks see a change, and a 400-link page took 4 requests.
 
 **Resume:** `python -m jobhunt.resume <pdf>` (Settings upload later) → text via pypdf → active resume. Jobs judged in the last `max_age_days` and not applied or skipped are re-judged against the new resume.
 

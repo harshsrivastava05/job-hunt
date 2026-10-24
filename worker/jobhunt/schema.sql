@@ -57,8 +57,18 @@ CREATE TABLE IF NOT EXISTS llm_calls (
   model         TEXT NOT NULL,
   in_tokens     INTEGER,
   out_tokens    INTEGER,
-  cached_tokens INTEGER
+  cached_tokens INTEGER,
+  provider      TEXT,                -- jev | openai
+  questions     INTEGER,             -- extract: links asked about; judge: questions about the one job
+  usd           REAL                 -- at decide.PRICES when the call was made
 );
+
+-- The model's answer per link on a company-built page: a changed page only asks about links it hasn't shown before.
+CREATE TABLE IF NOT EXISTS link_answers (
+  key      TEXT PRIMARY KEY,         -- sha1(page, url, text)[:16]
+  p        REAL NOT NULL,            -- probability the link is a job opening
+  seen_at  TEXT NOT NULL
+) WITHOUT ROWID;
 
 -- The active resume is what jobs are judged against; uploading a new one re-judges recent jobs.
 CREATE TABLE IF NOT EXISTS resumes (

@@ -27,7 +27,7 @@ from jobhunt.db import DB_PATH, connect, now
 
 PORT = int(os.environ.get("JOBHUNT_PORT", "8000"))
 PAGE = Path(__file__).parent / "index.html"
-JEV_USD_PER_M = 0.042  # per million input tokens; output is free
+INR_PER_USD = 96.5  # 2026-10-24; only for showing spend in rupees
 ACTIONS = {"queued", "opened", "applied", "skipped"}
 NUMBERS = {"min_score": (0, 100), "max_age_days": (1, 30), "retention_days": (3, 90), "interval_min": (15, 24 * 60)}
 WORDS = {"title_include", "title_exclude"}
@@ -56,13 +56,21 @@ def status(conn):
         "last_check": one("SELECT max(last_ok_at) FROM sources"),
         "new_24h": one("SELECT count(*) FROM jobs WHERE first_seen_at >= ? AND status != 'baseline'", day),
         "matched_24h": one("SELECT count(*) FROM jobs WHERE first_seen_at >= ? AND status = 'matched'", day),
-        "tokens_30d": one("SELECT coalesce(sum(in_tokens), 0) FROM llm_calls"),  # llm_calls keeps 30 days
-        "usd_per_m": JEV_USD_PER_M if decide.PROVIDER == "jev" else None,
+        "usage": {"24 h": usage(conn, day), "30 days": usage(conn, "")},  # llm_calls keeps 30 days
+        "inr_per_usd": INR_PER_USD,
         "provider": decide.PROVIDER,
         "resume": dict(cv) if cv else None,
         "settings": {k: json.loads(v) for k, v in conn.execute("SELECT key, value FROM settings")},
         "db": DB_PATH,
     }
+
+
+def usage(conn, since):
+    """Decision-model requests per provider since a time: jobs judged, links checked on company pages, cost."""
+    return [dict(r) for r in conn.execute(
+        "SELECT provider, count(*) AS requests, sum(kind = 'judge') AS jobs, coalesce(sum(CASE WHEN kind = 'extract' THEN questions END), 0) AS links,"
+        " coalesce(sum(usd), 0) AS usd FROM llm_calls WHERE at >= ? GROUP BY provider ORDER BY provider", (since,),
+    )]
 
 
 def sources(conn):
@@ -167,6 +175,8 @@ class Handler(BaseHTTPRequestHandler):
             match method, parts:
                 case "GET", [""]:
                     return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+                case "GET", ["icon.png"]:
+                    return self._send(200, (PAGE.parent / "icon.png").read_bytes(), "image/png")
                 case "GET", ["api", "jobs"]:
                     return self._send(200, jobs(conn))
                 case "GET", ["api", "status"]:

@@ -1,7 +1,8 @@
 """Jobs from career pages that aren't on a known board.
 
 Order: JSON-LD JobPosting -> decision model classifies the page's links (or a link heuristic without a key).
-The page fingerprint is the cursor: an unchanged page isn't re-extracted, so the model only runs when the page changes.
+The page fingerprint is the cursor: an unchanged page isn't re-extracted, so the model only runs when the page changes,
+and then only on links it hasn't answered for before (link_answers).
 """
 import hashlib
 import html
@@ -14,6 +15,7 @@ import httpx
 
 from jobhunt import ats, decide
 from jobhunt.ats import Job, in_india, parse_dt
+from jobhunt.db import connect, now
 
 TRACKING = re.compile(
     r"^(utm_|gclid$|fbclid$|_gl$|_ga$|mc_|ref$|refid$|source$|src$|trk|trackingid$|sessionid$|jsessionid$|gh_src$|lever-)", re.I
@@ -76,7 +78,8 @@ class Page(HTMLParser):
                 text = next(" ".join(t.split()) for t in self._atext if t.strip())
             if (not text or GENERIC_LINK.match(text)) and self._recent:  # "Apply" under a "Backend Engineer" heading
                 text = next((t for t in reversed(self._recent) if ROLE.search(t)), self._recent[-1])
-            if href and not href.startswith(("#", "mailto:", "tel:", "javascript:")):
+            # /cdn-cgi/ is Cloudflare's own (email protection, challenges): a fresh token on every load would change the fingerprint
+            if href and not href.startswith(("#", "mailto:", "tel:", "javascript:")) and "/cdn-cgi/" not in href:
                 url = canon(urljoin(self.base, href))
                 if not ROLE.search(text):  # the text near a bare "Apply" was a date, city or "Full Time": the URL often names the role
                     text = _slug_title(url) or text
@@ -218,22 +221,31 @@ def decided_jobs(p):
         (None, line) for line in dict.fromkeys(_lines(p))
         if ROLE.search(line) and 2 <= len(line.split()) <= 12 and not NAV.match(line) and line.lower() not in titled
     ][:100]
-    jobs = []
-    for start in range(0, len(items), 100):  # 100 questions per request keeps well inside the context limit
-        batch = items[start:start + 100]
-        shown = "\n".join(
-            f"{start + i}. {t[:100]} " + (
-                "(text on the page, no link)" if u is None else f"-> {(u.split(host, 1)[1] or '/') if urlsplit(u).netloc == host else u}"
+    # a page changes when one job is added, so remember every link's answer and only ask about the links that are new
+    keys = [hashlib.sha1(f"{p.base}\n{u}\n{t}".encode()).hexdigest()[:16] for u, t in items]
+    conn = connect()
+    probs = dict(conn.execute(f"SELECT key, p FROM link_answers WHERE key IN ({', '.join('?' * len(keys))})", keys)) if keys else {}
+    todo = [(k, it) for k, it in dict(zip(keys, items)).items() if k not in probs]
+    try:
+        for start in range(0, len(todo), 100):  # 100 questions per request keeps well inside the context limit
+            batch = todo[start:start + 100]
+            shown = "\n".join(
+                f"{i}. {t[:100]} " + (
+                    "(text on the page, no link)" if u is None else f"-> {(u.split(host, 1)[1] or '/') if urlsplit(u).netloc == host else u}"
+                )
+                for i, (_, (u, t)) in enumerate(batch)
             )
-            for i, (u, t) in enumerate(batch)
-        )
-        answers = decide.decide(
-            "extract", {"careers_page": p.base, "items": shown}, {f"i{start + i}": ITEM_Q.format(i=start + i) for i in range(len(batch))}
-        )
-        for i, (u, t) in enumerate(batch):
-            if (answers.get(f"i{start + i}") or 0) >= 0.6 and not re.search(r"\bjobs$", t, re.I):  # 0.5 is the model shrugging; "DevOps Jobs" is a category
-                url = u or canon(p.base)
-                jobs.append(Job(_id(p.base, url, t), t, url))
+            answers = decide.decide("extract", {"careers_page": p.base, "items": shown}, {f"i{i}": ITEM_Q.format(i=i) for i in range(len(batch))})
+            probs.update({k: answers[f"i{i}"] for i, (k, _) in enumerate(batch) if answers.get(f"i{i}") is not None})  # a refusal is asked again
+    finally:  # what was answered before a failed batch is kept
+        with conn:
+            conn.executemany("INSERT OR REPLACE INTO link_answers VALUES (?, ?, ?)", [(k, probs[k], now()) for k in dict.fromkeys(keys) if k in probs])
+        conn.close()
+    jobs = []
+    for k, (u, t) in zip(keys, items):
+        if probs.get(k, 0) >= 0.6 and not re.search(r"\bjobs$", t, re.I):  # 0.5 is the model shrugging; "DevOps Jobs" is a category
+            url = u or canon(p.base)
+            jobs.append(Job(_id(p.base, url, t), t, url))
     linked = {j.title.lower() for j in jobs if j.url != canon(p.base)}  # same role as text and as a link: keep the link
     return [j for j in jobs if j.url != canon(p.base) or j.title.lower() not in linked]
 

@@ -1,9 +1,14 @@
 """Run: python test_worker.py (or pytest). The cursor: what counts as new, what gets marked seen."""
+import os
+import tempfile
 from datetime import datetime, timedelta, timezone
 
+os.environ["JOBHUNT_DB"] = os.path.join(tempfile.mkdtemp(), "test.db")  # before jobhunt.db reads it
+
+from jobhunt import decide
 from jobhunt.ats import Job
 from jobhunt.db import connect
-from jobhunt.generic import AGGREGATOR, canon, heuristic_jobs, job_links, parse
+from jobhunt.generic import AGGREGATOR, canon, decided_jobs, heuristic_jobs, job_links, parse
 from jobhunt.worker import save
 
 CFG = {"interval_min": 60, "max_age_days": 3}
@@ -96,6 +101,26 @@ def test_titles_from_job_urls_and_junk_links():
       <a href="https://x.com/intent/tweet?url=acme">X</a>""")
     assert [t for _, t in page.links] == ["Senior Backend Engineer", "Data Analyst", "Hyderabad", "X"]  # no slug to use: unchanged
     assert AGGREGATOR.search("x.com") and AGGREGATOR.search("www.facebook.com") and not AGGREGATOR.search("x.company.com")
+
+
+def test_changed_page_only_asks_about_new_links():
+    asked = []
+
+    def fake(kind, state, questions):
+        lines = state["items"].splitlines()
+        asked.append([line.split(" ", 1)[1].split(" -> ")[0] for line in lines])
+        return {f"i{i}": 0.9 if "Engineer" in line else 0.1 for i, line in enumerate(lines)}
+
+    real, decide.decide = decide.decide, fake
+    try:
+        html = '<a href="/jobs/1">Backend Engineer</a><a href="/stories">Customer stories</a>'
+        assert [j.title for j in decided_jobs(parse("https://acme.com/careers", html))] == ["Backend Engineer"]
+        html += '<a href="/jobs/2">Data Engineer</a><a href="/cdn-cgi/content?id=abc">Data Engineer</a>'
+        assert [j.title for j in decided_jobs(parse("https://acme.com/careers", html))] == ["Backend Engineer", "Data Engineer"]
+        assert decided_jobs(parse("https://acme.com/careers", html)) and len(asked) == 2  # nothing new: no request
+    finally:
+        decide.decide = real
+    assert asked == [["Backend Engineer", "Customer stories"], ["Data Engineer"]], asked
 
 
 def test_canon_and_aggregators():

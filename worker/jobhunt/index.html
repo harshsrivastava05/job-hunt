@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Job Hunt</title>
+<link rel="icon" href="/icon.png">
 <style>
   :root {
     --bg: #f6f7f9; --card: #fff; --text: #16181d; --muted: #646b78; --line: #e2e5ea;
@@ -50,7 +51,7 @@
   table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--muted); font-weight: 500; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   td:last-child { white-space: nowrap; }
   .err { color: var(--bad); font-size: 12.5px; word-break: break-word; }
   .tablewrap { overflow-x: auto; }
@@ -86,6 +87,7 @@ const ago = ts => {
   return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
 };
 const company = s => (s || "").split(",").join(", ");
+const money = usd => { const inr = usd * st.inr_per_usd; return `₹${inr.toFixed(inr < 100 ? 2 : 0)} ($${usd.toFixed(usd < 1 ? 3 : 2)})`; };
 
 async function api(path, body, raw) {
   const opt = body === undefined ? {} : { method: "POST", headers: { "X-Jobhunt": "1" }, body: raw ? body : JSON.stringify(body) };
@@ -104,10 +106,10 @@ async function load() {
 function render() {
   const n = s => jobs.filter(j => j.apply_status === s).length;
   document.title = n("queued") ? `(${n("queued")}) Job Hunt` : "Job Hunt";
-  const spend = st.usd_per_m != null ? `$${(st.tokens_30d * st.usd_per_m / 1e6).toFixed(2)}` : `${(st.tokens_30d / 1e6).toFixed(1)}M tokens`;
+  const spend = money(st.usage["30 days"].reduce((sum, r) => sum + r.usd, 0));
   document.getElementById("status").textContent =
     `${st.companies_with_jobs} of ${st.companies} companies listing jobs · checked ${ago(st.last_check)} · ` +
-    `${st.new_24h} new postings in 24 h, ${st.matched_24h} matched · ${st.failing} pages failing · ${spend} in 30 days`;
+    `${st.new_24h} new postings in 24 h, ${st.matched_24h} matched · ${st.failing} pages failing · model ${spend} in 30 days`;
   const warn = [];
   if (!st.provider) warn.push("No decision-model key: add JEV_API_KEY (or OPENAI_API_KEY) to worker/.env and restart the app.");
   if (!st.resume) warn.push("No resume yet: upload one in Settings so jobs can be judged.");
@@ -193,6 +195,13 @@ function settingsView() {
     </div>
     <div class="actions"><button class="b primary" data-save="1">Save</button></div>
     <div class="msg" id="msg-settings"></div></section>
+  <section class="card"><h2>Model usage</h2>
+    <p class="hint">Every request to the decision model: jobs judged, links checked on company-built pages, and the cost (₹${esc(st.inr_per_usd)} to the dollar). Kept for 30 days.</p>
+    <div class="tablewrap"><table><tr><th>Period</th><th>Model</th><th class="num">Requests</th><th class="num">Jobs judged</th><th class="num">Links checked</th><th class="num">Cost</th></tr>
+    ${Object.entries(st.usage).flatMap(([period, rows]) => rows.map(r => `<tr><td>${esc(period)}</td>
+      <td>${esc({ jev: "TypeSafe Jev", openai: "OpenAI" }[r.provider] || r.provider)}</td><td class="num">${r.requests}</td>
+      <td class="num">${r.jobs}</td><td class="num">${r.links}</td><td class="num">${money(r.usd)}</td></tr>`)).join("")
+      || `<tr><td colspan="6">No requests yet.</td></tr>`}</table></div></section>
   <p class="status">Model: ${esc(st.provider || "none")} · Data: ${esc(st.db)}</p>`;
 }
 

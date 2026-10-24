@@ -25,6 +25,11 @@ PROVIDER = os.environ.get("DECISION_PROVIDER") or (
 )
 
 
+# USD per million tokens: (input, cached input, output). Jev bills input only. OpenAI's gpt-6-luna rates are from
+# third-party price listings, 2026-10-24; check openai.com/api/pricing if they matter.
+PRICES = {"jev": (0.042, 0.042, 0.0), "openai": (0.10, 0.01, 0.50)}
+
+
 def enabled():
     return PROVIDER is not None
 
@@ -49,7 +54,7 @@ def decide(kind, state, questions):
         answers = {a["name"]: a.get("probability") for a in d.get("answers") or []}  # a refusal has no probability
         cached = ((d.get("usage") or {}).get("input_tokens_details") or {}).get("cached_tokens")
     usage = d.get("usage") or {}
-    _log(kind, d.get("model") or PROVIDER, usage.get("input_tokens"), usage.get("output_tokens"), cached)
+    _log(kind, d.get("model") or PROVIDER, len(questions), usage.get("input_tokens") or 0, usage.get("output_tokens") or 0, cached or 0)
     return {k: answers.get(k) for k in questions}
 
 
@@ -63,11 +68,14 @@ def _post(url, key, body):
         return r.json()
 
 
-def _log(kind, model, in_tokens, out_tokens, cached):
+def _log(kind, model, questions, in_tokens, out_tokens, cached):
+    p_in, p_cached, p_out = PRICES[PROVIDER]
+    usd = ((in_tokens - cached) * p_in + cached * p_cached + out_tokens * p_out) / 1e6
     conn = connect()
     with conn:
         conn.execute(
-            "INSERT INTO llm_calls (kind, model, in_tokens, out_tokens, cached_tokens) VALUES (?, ?, ?, ?, ?)",
-            (kind, model, in_tokens, out_tokens, cached),
+            "INSERT INTO llm_calls (kind, provider, model, questions, in_tokens, out_tokens, cached_tokens, usd)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (kind, PROVIDER, model, questions, in_tokens, out_tokens, cached, usd),
         )
     conn.close()

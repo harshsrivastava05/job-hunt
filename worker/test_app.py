@@ -7,6 +7,7 @@ os.environ["JOBHUNT_DB"] = os.path.join(tempfile.mkdtemp(), "test.db")  # before
 
 import httpx  # noqa: E402
 
+from jobhunt import decide  # noqa: E402
 from jobhunt.app import Handler, Server  # noqa: E402
 from jobhunt.db import connect, now  # noqa: E402
 
@@ -38,6 +39,20 @@ def test_api():
     assert httpx.post(base + "/api/settings", json={"min_score": 40, "title_exclude": ["Senior", " lead ", ""]}, headers=OK).status_code == 200
     settings = httpx.get(base + "/api/status").json()["settings"]
     assert (settings["min_score"], settings["title_exclude"]) == (40, ["senior", "lead"]), settings
+
+    real = decide.PROVIDER
+    try:
+        decide.PROVIDER = "jev"
+        decide._log("judge", "jev-1", 6, 2_000_000, 0, 0)
+        decide.PROVIDER = "openai"
+        decide._log("extract", "gpt-6-luna", 40, 1_000_000, 1000, 500_000)
+    finally:
+        decide.PROVIDER = real
+    use = httpx.get(base + "/api/status").json()["usage"]
+    assert [{**r, "usd": round(r["usd"], 6)} for r in use["30 days"]] == [  # Jev: 2M input at $0.042; OpenAI: 0.5M fresh at $0.10 + 0.5M cached at $0.01 + 1000 out at $0.50
+        {"provider": "jev", "requests": 1, "jobs": 1, "links": 0, "usd": 0.084},
+        {"provider": "openai", "requests": 1, "jobs": 0, "links": 40, "usd": 0.0555},
+    ], use
 
     r = httpx.post(base + "/api/import?name=more.csv", content=b"company_name,careers_url,city\nNewCo,newco.com/careers,Pune\n", headers=OK)
     assert r.status_code == 200 and "1 new sources" in r.json()["message"], r.text

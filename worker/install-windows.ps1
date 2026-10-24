@@ -33,6 +33,7 @@ Register-ScheduledTask -TaskName $name -Action $action -Trigger $atLogon, $every
 
 New-Item -Path $aumid -Force | Out-Null
 New-ItemProperty -Path $aumid -Name DisplayName -Value "Job Hunt" -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $aumid -Name IconUri -Value "$PSScriptRoot\jobhunt\icon.png" -PropertyType String -Force | Out-Null
 
 $shell = New-Object -ComObject WScript.Shell
 foreach ($path in $shortcuts) {
@@ -40,7 +41,7 @@ foreach ($path in $shortcuts) {
     $lnk.TargetPath = $pythonw
     $lnk.Arguments = "-m jobhunt.app --open"
     $lnk.WorkingDirectory = $PSScriptRoot
-    $lnk.IconLocation = "$env:SystemRoot\System32\imageres.dll,-1023"
+    $lnk.IconLocation = "$PSScriptRoot\jobhunt\icon.ico,0"  # drawn from jobhunt\icon.svg
     $lnk.Description = "Open the job queue (starts the watcher if it isn't running)"
     $lnk.Save()
 }

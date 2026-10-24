@@ -222,6 +222,7 @@ def purge(conn, retention_days):
         )
         conn.execute("DELETE FROM jobs WHERE last_seen_at < ? AND apply_status IS NOT 'applied'", (cut,))
         conn.execute("DELETE FROM llm_calls WHERE at < ?", (now(utc - timedelta(days=30)),))
+        conn.execute("DELETE FROM link_answers WHERE seen_at < ?", (now(utc - timedelta(days=30)),))  # links gone from their page
 
 
 def daily(conn):
