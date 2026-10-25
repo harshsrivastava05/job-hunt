@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 os.environ["JOBHUNT_DB"] = os.path.join(tempfile.mkdtemp(), "test.db")  # before jobhunt.db reads it
 
-from jobhunt import decide
+from jobhunt import decide, generic
 from jobhunt.ats import Job
 from jobhunt.db import connect
 from jobhunt.generic import AGGREGATOR, canon, decided_jobs, heuristic_jobs, job_links, parse
@@ -65,6 +65,18 @@ def test_extractor_switch_is_a_baseline():
     assert save(conn, _src(conn), {"jobs": more + [Job("u/d", "SRE", "u/d")], "hash": "decide:p2"}, "2026-10-24 12:00:00", CFG) == ("changed", 1)
 
 
+def test_first_jobs_on_an_empty_page_are_a_baseline():
+    conn = connect(":memory:")
+    conn.execute("INSERT INTO sources (id, url, ats, ats_key) VALUES (1, 'https://x.com/jobs', 'generic_js', 'https://x.com/jobs')")
+    assert save(conn, _src(conn), {"jobs": [], "hash": "decide2:empty"}, "2026-10-24 10:00:00", CFG) == ("changed", 0)  # didn't render
+    utc = datetime.now(timezone.utc)
+    shown = [Job("u/a", "Data Engineer Posted 2 years ago", "u/a"), Job("u/b", "SDE", "u/b", posted_at=utc - timedelta(hours=5))]
+    assert save(conn, _src(conn), {"jobs": shown, "hash": "decide2:p1"}, "2026-10-25 07:00:00", CFG) == ("changed", 1)
+    assert _status(conn) == {"u/a": "baseline", "u/b": "new"}  # only the one dated inside max_age_days is judged
+    later = shown + [Job("u/c", "Backend Engineer", "u/c")]
+    assert save(conn, _src(conn), {"jobs": later, "hash": "decide2:p2"}, "2026-10-25 08:00:00", CFG) == ("changed", 1)
+
+
 def test_heuristic_jobs():
     page = parse("https://acme.com/careers", """
       <a href="/careers">Careers</a> <a href="/about">About us</a> <a href="/careers/life">Life at Acme</a>
@@ -121,6 +133,19 @@ def test_changed_page_only_asks_about_new_links():
     finally:
         decide.decide = real
     assert asked == [["Backend Engineer", "Customer stories"], ["Data Engineer"]], asked
+
+
+def test_page_whose_jobs_need_scripts_is_rendered():
+    shell = parse("https://acme.com/careers", "<p>We are hiring! " + "Life at Acme is great. " * 40 + "</p>")
+    rendered = parse("https://acme.com/careers", '<a href="/jobs/7">Platform Engineer</a>')
+    real = generic.fetch, decide.decide
+    generic.fetch = lambda url, js=False: (rendered, True) if js else (shell, False)
+    decide.decide = lambda kind, state, questions: {k: 0.9 for k in questions}
+    try:
+        jobs, h, updates = generic.crawl("https://acme.com/careers", False, None, follow=False)
+    finally:
+        generic.fetch, decide.decide = real
+    assert [j.title for j in jobs] == ["Platform Engineer"] and updates == {"ats": "generic_js"}, (jobs, updates)
 
 
 def test_canon_and_aggregators():

@@ -83,20 +83,24 @@ def in_india(text="", country=""):
     parts = [p.strip() for p in re.split(r"[,/|;]", text or "")]
     if "IND" in parts or ("IN" in parts and (parts[-1] == "IN" and len(parts) >= 3 or any(re.fullmatch(r"\d{6}", p) for p in parts))):
         return True
-    leftover = re.sub(r"(?i)\b(remote|hybrid|on-?site|none|anywhere|\d+ locations)\b", "", text or "")
+    leftover = re.sub(r"(?i)\b(remote|hybrid|on-?site|none|anywhere|\d+ locations|multiple locations)\b", "", text or "")
     return not country and not re.search(r"[a-z]", leftover, re.I)
 
 
+AGO = re.compile(r"\b(today|yesterday|(\d+)\+?\s*(minute|hour|day|week|month|year)s?\s+ago)\b", re.I)
+DAYS = {"minute": 0, "hour": 0, "day": 1, "week": 7, "month": 30, "year": 365}
+
+
 def parse_dt(v):
-    """ISO string, epoch s/ms, or Workday's 'Posted 3 Days Ago' -> aware UTC datetime (None if unknown)."""
+    """ISO string, epoch s/ms, or relative ('Posted 3 Days Ago', '2 years ago') -> aware UTC datetime (None if unknown)."""
     if v in (None, ""):
         return None
     if isinstance(v, (int, float)) or (isinstance(v, str) and v.isdigit()):
         v = float(v)
         return datetime.fromtimestamp(v / 1000 if v > 1e11 else v, timezone.utc)
-    m = re.search(r"posted (today|yesterday|(\d+)\+? days? ago)", v, re.I)
+    m = AGO.search(v)
     if m:
-        days = {"today": 0, "yesterday": 1}.get(m[1].lower()) if not m[2] else int(m[2])
+        days = {"today": 0, "yesterday": 1}.get(m[1].lower()) if not m[2] else int(m[2]) * DAYS[m[3].lower()]
         return datetime.now(timezone.utc) - timedelta(days=days)
     try:
         dt = datetime.fromisoformat(v.strip().replace("Z", "+00:00"))
@@ -130,14 +134,16 @@ def workday(c, key, since):
     body = {"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": ""}
     d = _json(c, "POST", api, json=body)
     india = _workday_india(d.get("facets", []))
+    if india == {}:  # the board's location filters list nowhere in India (T-Mobile, LPL): its "2 Locations" jobs aren't ours
+        return []
     if india:  # filter server-side, global employers list thousands of jobs
-        body["appliedFacets"] = {india[0]: [india[1]]}
+        body["appliedFacets"] = india
         d = _json(c, "POST", api, json=body)
     total, posts, jobs = d.get("total", 0), d.get("jobPostings", []), []
     while posts:  # newest first
         for p in posts:
             loc = p.get("locationsText", "")
-            if india or in_india(loc):
+            if p.get("externalPath") and (india or in_india(loc)):  # Deutsche Bank lists entries without a job link
                 jobs.append(Job(p["externalPath"], p["title"], page_url + p["externalPath"], loc, parse_dt(p.get("postedOn"))))
         body["offset"] += len(posts)
         if body["offset"] >= min(total, MAX_JOBS) or _older(parse_dt(posts[-1].get("postedOn")), since):
@@ -147,15 +153,31 @@ def workday(c, key, since):
 
 
 def _workday_india(facets):
-    """(facetParameter, id) of 'India' in a country facet; facets can be nested in groups."""
-    for f in facets:
-        for v in f.get("values", []):
-            if "facetParameter" in v:
-                if hit := _workday_india([v]):
-                    return hit
-            elif v.get("descriptor", "").strip().lower() == "india" and "country" in f.get("facetParameter", "").lower():
-                return f["facetParameter"], v["id"]
-    return None
+    """appliedFacets that keep only India jobs: the country facet's India value, else the India cities of the
+    locations facet (Zebra has no country facet, only 'Bengaluru, India'). {} if the board has those facets but
+    nothing in India; None if it has neither, and jobs are checked one by one. Facets can be nested in groups."""
+    countries, places = {}, {}
+
+    def walk(fs):
+        for f in fs:
+            param = f.get("facetParameter", "")
+            for v in f.get("values", []):
+                if "facetParameter" in v:
+                    walk([v])
+                elif "country" in param.lower():
+                    countries.setdefault(param, []).append(v)
+                elif param.lower() in ("locations", "location"):
+                    places.setdefault(param, []).append(v)
+
+    walk(facets)
+    if countries:
+        hits = {p: [v["id"] for v in vs if INDIA.search(v.get("descriptor", "")) or v.get("descriptor", "").strip().upper() in ("IN", "IND")]
+                for p, vs in countries.items()}
+    elif places:
+        hits = {p: [v["id"] for v in vs if INDIA.search(v.get("descriptor", ""))] for p, vs in places.items()}
+    else:
+        return None
+    return {p: ids for p, ids in hits.items() if ids}
 
 
 def greenhouse(c, key, since):
@@ -431,7 +453,8 @@ def phenom(c, key, since):
         "lang": locale, "deviceType": "desktop", "country": country, "pageName": "search-results", "ddoKey": "refineSearch",
         "sortBy": "Most recent", "subsearch": "", "from": 0, "jobs": True, "counts": True, "all_fields": ["country"],
         "size": 50, "clearAll": False, "jdsource": "facets", "isSliderEnable": False, "pageId": "page20",
-        "siteType": "external", "keywords": "", "global": True, "selected_fields": {"country": ["India"]},
+        "siteType": "external", "keywords": "", "global": True,
+        "selected_fields": {"country": ["India", "IND"]},  # sites name it either way (OpenText: IND); an unused value is ignored
     }
     jobs = []
     while body["from"] < MAX_JOBS:
@@ -574,9 +597,44 @@ def _icims_jobs(origin, fetch):
     return jobs
 
 
+def amazon(c, key, since):
+    """amazon.jobs' search API. key: country code (IND). Sorted by creation, which isn't quite posted_date,
+    so paging stops at the first page whose newest job is older than since. Qualifications carry the experience asks."""
+    jobs, offset = [], 0
+    while offset < MAX_JOBS:
+        batch = _json(c, "GET", "https://www.amazon.jobs/en/search.json",
+                      params={"country": key, "sort": "recent", "result_limit": 100, "offset": offset}).get("jobs") or []
+        for j in batch:
+            desc = (f"{j.get('description') or ''}<h3>Basic qualifications</h3>{j.get('basic_qualifications') or ''}"
+                    f"<h3>Preferred qualifications</h3>{j.get('preferred_qualifications') or ''}")
+            jobs.append(Job(j["id_icims"], j["title"].strip(), "https://www.amazon.jobs" + j["job_path"],
+                            j.get("normalized_location") or j.get("location") or "", parse_dt(j.get("posted_date")), desc))
+        offset += len(batch)
+        dates = [d for d in (parse_dt(j.get("posted_date")) for j in batch) if d]
+        if len(batch) < 100 or (dates and max(dates) < since):
+            break
+    return jobs
+
+
+def capgemini(c, key, since):
+    """The job search API behind capgemini.com's careers pages. key: country site (in-en). Not sortable by date and
+    every job's updated_at moves daily, so all ~700 are read (1000 a page); indexed_at is when a job was first listed."""
+    jobs, page, total, read = [], 1, 1, 0
+    while read < total:
+        d = _json(c, "GET", "https://cg-jobstream-api.azurewebsites.net/api/job-search", params={"page": page, "size": 1000, "country_code": key})
+        total, batch = d.get("total", 0), d.get("data") or []
+        for j in batch:
+            jobs.append(Job(j["id"], j["title"].strip(), j["apply_job_url"].split("?")[0], j.get("location") or "",
+                            parse_dt(j.get("indexed_at")), j.get("description") or ""))
+        read, page = read + len(batch), page + 1
+        if not batch:
+            break
+    return jobs
+
+
 ADAPTERS = {f.__name__: f for f in (
     workday, greenhouse, lever, ashby, smartrecruiters, workable, keka, darwinbox, kula, zoho, freshteam,
-    pyjamahr, turbohire, trakstar, oraclehcm, eightfold, phenom, successfactors, icims,
+    pyjamahr, turbohire, trakstar, oraclehcm, eightfold, phenom, successfactors, icims, amazon, capgemini,
 )}
 
 
@@ -611,6 +669,8 @@ PATTERNS = [
     ("phenom", r"cdn\.phenompeople\.com/CareerConnectResources/(?:pp/)?\w+/([a-z]{2}_[a-z]+)/"),  # origin = the page
     ("successfactors", r"rmkcdn\.successfactors\.com|jobs2web\.com"),  # SuccessFactors career site builder; key = the page
     ("icims", r"app\.jibecdn\.com"),  # iCIMS careers-home; key = the page
+    ("amazon", r"(?<![\w-])amazon\.jobs\b", "IND"),  # one board for all of Amazon; India's jobs
+    ("capgemini", r"(?<![\w-])capgemini\.com/in-en/careers|cg-jobstream-api", "in-en"),
 ]
 JUNK = {
     "wday", "login", "assets", "embed", "cdn", "api", "j", "app", "static", "www", "w", "jsapi", "careerhub",

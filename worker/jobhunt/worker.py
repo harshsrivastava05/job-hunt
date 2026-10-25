@@ -76,9 +76,11 @@ def save(conn, src, out, ts, cfg):
         result = "changed"
         seen = {r[0] for r in conn.execute("SELECT external_id FROM jobs WHERE source_id = ?", (sid,))}
         fresh_after = utc - timedelta(days=cfg["max_age_days"])
-        # first crawl, or a different extractor (heuristic -> decide, a board adapter replacing generic): baseline again
+        # first crawl, or a different extractor (heuristic -> decide, a board adapter replacing generic): baseline again.
+        # Also the first time a page lists anything: an empty first crawl is often a page that didn't render, and when it
+        # does, everything on it would look new (Translab: "Posted 2 years ago"). Undated first jobs of a new board are missed.
         mode = lambda h: (h or "").split(":")[0]  # noqa: E731
-        baseline = src["bootstrapped_at"] is None or mode(src["list_hash"]) != mode(out["hash"])
+        baseline = src["bootstrapped_at"] is None or mode(src["list_hash"]) != mode(out["hash"]) or not seen
         rows = {}
         for j in jobs:
             if j.external_id in seen or j.external_id in rows:

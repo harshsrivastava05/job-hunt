@@ -98,7 +98,10 @@ def _from_page(url, page_html):
         except ValueError:
             pass
     posting = [j for j in generic.jsonld_jobs(generic.parse(url, page_html)) if j.description]
-    return posting[0].description if posting else page_html
+    if not posting:
+        return page_html
+    dated = f"<p>Posted: {posting[0].posted_at.date().isoformat()}</p>" if posting[0].posted_at else ""  # the age check reads it
+    return dated + posting[0].description
 
 
 def describe(row):
@@ -138,8 +141,18 @@ def describe(row):
     return (text if len(text) > len(listed) else listed)[:8000]  # worst case: title, company and location alone
 
 
-def _judge(row, resume):
+POSTED = re.compile(
+    r"\b(?:date )?posted(?: on)?\s*:?\s*(today|yesterday|\d+\+?\s*(?:minute|hour|day|week|month|year)s?\s+ago|\d{4}-\d{2}-\d{2}"
+    r"|\d{1,2} [A-Za-z]{3,9} \d{4}|[A-Za-z]{3,9} \d{1,2}, \d{4})", re.I,
+)
+
+
+def _judge(row, resume, cutoff):
+    """-> (description, probabilities), or (description, None) when the job page shows it's older than cutoff."""
     jd = describe(row)
+    m = None if row["posted_at"] else POSTED.search(jd[:3000])  # undated on the list: the job page may say (first mention)
+    if m and (ats.parse_dt(m[1]) or cutoff) < cutoff:
+        return jd, None
     job = f"Title: {row['title']}\nCompany: {row['companies']}\nLocation: {row['location'] or 'not stated'}\n\n{jd or '(no description available)'}"
     return jd, decide.decide("judge", {"candidate_resume": f"{RUBRIC}\n\n{resume}", "job": job}, QUESTIONS)
 
@@ -180,7 +193,8 @@ def judge_pending(conn, limit=500, workers=4):
 
     failures = []
     with ThreadPoolExecutor(workers) as ex:
-        futures = {ex.submit(_judge, r, resume["text"]): r for r in pending}
+        cutoff = utc - timedelta(days=cfg["max_age_days"])
+        futures = {ex.submit(_judge, r, resume["text"], cutoff): r for r in pending}
         for f in as_completed(futures):
             r = futures[f]
             try:
@@ -190,6 +204,11 @@ def judge_pending(conn, limit=500, workers=4):
                 if len(failures) >= 5:  # out of credit, bad key, provider down: stop instead of hammering it
                     ex.shutdown(cancel_futures=True)
                     break
+                continue
+            if p is None:  # the job page dates it before the cutoff: no model call was made
+                with conn:
+                    conn.execute("UPDATE jobs SET status = 'stale', verdict = ? WHERE id = ?", (json.dumps({"gate": "job page date"}), r["id"]))
+                done += 1
                 continue
             fit = p.get("fit")
             status = "error" if fit is None else "matched" if wanted(p, cfg["min_score"]) else "rejected"

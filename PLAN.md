@@ -5,7 +5,7 @@ Watch ~400 career pages, catch new postings within the hour, have an LLM judge e
 ## Your rules (non-negotiable)
 
 - Poll every 1–2 h. Each company has its own cursor, so the LLM never judges the same job twice.
-- No LLM call for postings older than **3 days** (setting).
+- No LLM call for postings older than **2 days** (setting). Undated jobs: a "posted N days ago" in the listing or a date on the job page counts; else first-seen.
 - Purge jobs/queue older than **7 days**.
 - Resume and company list are updatable at any time (CSV / Excel import).
 - **Jeevrit is production and stays untouched.** The job hunter runs on your laptop for now. If it moves to the Oracle box later, it goes in as a separate, outbound-only stack (see *Box isolation*).
@@ -87,7 +87,7 @@ llm_calls(id, at, kind, model, in_tokens, out_tokens)   -- cost visibility
 **The per-company cursor has three parts:**
 1. `list_hash`: hash of the normalized job list (sorted ATS ids, or the sorted link set for generic pages). If it hasn't changed, the source is done: no diff, no LLM.
 2. `jobs(source_id, external_id)`: the seen set. A changed list is diffed against it, and only unseen ids continue.
-3. `bootstrapped_at`: on the first crawl of a source, every current job is stored as `baseline` without an LLM call, except jobs whose ATS date is within 3 days. Without this, day one would send ~5k open jobs to the LLM.
+3. `bootstrapped_at`: on the first crawl of a source, every current job is stored as `baseline` without an LLM call, except jobs whose ATS date is within 2 days. A source's first non-empty list is a baseline too (an empty first crawl is often a page that failed to render). Without this, day one would send ~5k open jobs to the LLM.
 
 **Adapters** each return `JobStub(external_id, title, url, location, posted_at, description?)`. They're built in order of how many sources they cover:
 
@@ -115,7 +115,7 @@ Big global employers (Workday, Eightfold, …) list thousands of jobs worldwide,
 New jobs pass through gates, cheapest first. Only the survivors cost money:
 
 0. **Location** (at fetch time, not a gate): India only, anywhere in India. No city filter (your call, 2026-10-24).
-1. **Age**: `posted_at` > 3 days → `stale`
+1. **Age**: `posted_at` > 2 days (`max_age_days`) → `stale`
 2. **Title**: include/exclude keywords (suggested from your resume, editable). "Member of Technical Staff"/MTS passes; senior/lead/manager/principal titles don't.
 3. **Dedupe**: same company + normalized title already judged this week
 4. **Fetch JD** (`judge.describe`, trimmed to ~8k chars). A list's text counts only if it's ≥ 400 chars; Oracle HCM and Phenom lists are always summaries. Then the board's detail API (Workday, SmartRecruiters, Oracle HCM), else the job page (Phenom's embedded job data, JSON-LD `JobPosting`, page text), rendered in a browser if it's JS-only.
@@ -300,6 +300,10 @@ New jobs pass through gates, cheapest first. Only the survivors cost money:
 - HR mass email (your future scope).
 - Careers-URL discovery for the ~970 companies without one (LLM web search, one-time per company).
 - Adapters for the unconfirmed platforms (Synaptics/Jobvite, Coupa/Gem) and legacy SuccessFactors portals (Swiss Re works through the generic reader already).
+- Readers that would unlock the remaining zero-job companies (2026-10-25 sweep: 870 of 1,098 list jobs):
+  - Platforms: classic iCIMS (SAS, Rambus, JAGGAER, EchoStar), BrassRing (UBS), Avature, Pinpoint, Teamtailor, and Juspay's, Globant's and Peoplebox's own APIs.
+  - Ola Electric's TurboHire token host returns 503.
+  - Notion and Cloudflare bot checks outlast the browser's ~4 s wait.
 
 ## Optional from you
 - **Phone access:** install Tailscale on the laptop and phone (same account), then run `tailscale serve --bg 8000` once on the laptop.

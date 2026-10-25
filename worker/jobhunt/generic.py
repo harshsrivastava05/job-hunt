@@ -245,7 +245,8 @@ def decided_jobs(p):
     for k, (u, t) in zip(keys, items):
         if probs.get(k, 0) >= 0.6 and not re.search(r"\bjobs$", t, re.I):  # 0.5 is the model shrugging; "DevOps Jobs" is a category
             url = u or canon(p.base)
-            jobs.append(Job(_id(p.base, url, t), t, url))
+            dated = ats.AGO.search(t)  # a card's "Posted 2 years ago" is often part of its link text
+            jobs.append(Job(_id(p.base, url, t), t, url, posted_at=parse_dt(dated[0]) if dated else None))
     linked = {j.title.lower() for j in jobs if j.url != canon(p.base)}  # same role as text and as a link: keep the link
     return [j for j in jobs if j.url != canon(p.base) or j.title.lower() not in linked]
 
@@ -291,6 +292,10 @@ def crawl(url, js=False, prev_hash=None, follow=True):
     if not jobs:
         jobs = heuristic_jobs(p) if mode == "heuristic" else decided_jobs(p)
     updates = {"ats": "generic_js" if js else "generic"}
+    if not jobs and not js:  # a page with enough text to pass as loaded, whose job list only appears once scripts run
+        rendered = crawl(url, True, prev_hash, follow=False)
+        if rendered[0]:  # from now on the source is read in the browser
+            return rendered
     if not jobs and follow:  # a landing page: find the real job list once and remember it as the source's key
         for link in job_links(p, 2):
             sub_jobs, sub_hash, sub_updates = crawl(link, False, None, follow=False)

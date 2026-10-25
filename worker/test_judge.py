@@ -3,6 +3,7 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 
+from jobhunt import decide, judge
 from jobhunt.db import SCHEMA, connect, now
 from jobhunt.judge import gate, judge_pending, purge
 from jobhunt.resume import add
@@ -26,6 +27,24 @@ def test_gates():
         assert gate(_job(title), CFG, UTC) is None, title
     for title in ("Senior Backend Engineer", "Sr. Software Engineer", "Engineering Manager", "Principal Engineer", "Account Executive", "Chartered Accountant"):
         assert gate(_job(title), CFG, UTC) == ("filtered", "title"), title
+
+
+def test_job_page_date_stops_old_undated_jobs():
+    calls = []
+    real = judge.describe, decide.decide
+    judge.describe = lambda row: row["jd"]
+    decide.decide = lambda *a: calls.append(1) or {"fit": 0.9}
+    try:
+        cutoff = UTC - timedelta(days=2)
+        row = lambda jd, posted=None: {"jd": jd, "posted_at": posted, "title": "SDE", "companies": "X", "location": ""}  # noqa: E731
+        assert judge._judge(row("Data Engineering Bangalore Posted 2 years ago. Python, Spark"), "cv", cutoff)[1] is None
+        assert judge._judge(row("Posted: 2024-05-01 We build payment rails"), "cv", cutoff)[1] is None  # JSON-LD datePosted
+        assert judge._judge(row("Date posted: Oct 25, 2026. Backend role"), "cv", cutoff)[1] == {"fit": 0.9}
+        assert judge._judge(row("Backend role, no date anywhere"), "cv", cutoff)[1] == {"fit": 0.9}
+        assert judge._judge(row("Posted 2 years ago", now(UTC)), "cv", cutoff)[1] == {"fit": 0.9}  # the list's own date wins
+    finally:
+        judge.describe, decide.decide = real
+    assert len(calls) == 3
 
 
 def test_purge_keeps_cursor_and_applied():
@@ -85,7 +104,7 @@ def test_settings_apply_without_rejudging():
         conn.execute("INSERT INTO jobs (id, source_id, external_id, url, title, location, first_seen_at, last_seen_at, status, apply_status, verdict)"
                      " VALUES (?, 1, ?, 'u', ?, 'Pune', ?, ?, ?, ?, ?)", (i, str(i), title, now(UTC), now(UTC), status, applied, verdict))
     import jobhunt.judge as j
-    j.decide.enabled, j._judge = lambda: True, lambda r, resume: ("jd", {"fit": 0.6, "skills": 0.7, "experience": 0.5, "role": 0.9})
+    j.decide.enabled, j._judge = lambda: True, lambda r, resume, cutoff: ("jd", {"fit": 0.6, "skills": 0.7, "experience": 0.5, "role": 0.9})
     assert judge_pending(conn) == 1
     got = {r[0]: tuple(r[1:]) for r in conn.execute("SELECT id, status, apply_status FROM jobs")}
     assert got == {1: ("matched", "queued"), 2: ("matched", "queued"), 3: ("rejected", None), 4: ("rejected", None),

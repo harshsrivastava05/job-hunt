@@ -1,7 +1,7 @@
 """Run: python test_ats.py (or pytest). Offline: detection, date parsing, India filter."""
 from datetime import datetime, timedelta, timezone
 
-from jobhunt.ats import _sf_html, detect, in_india, parse_dt
+from jobhunt.ats import _sf_html, _workday_india, amazon, capgemini, detect, in_india, parse_dt
 
 
 def test_detect_picks_real_boards():
@@ -70,6 +70,39 @@ def test_successfactors_html():
     ], jobs
 
 
+def test_workday_india_filter():
+    group = lambda *facets: [{"facetParameter": "locationMainGroup", "values": list(facets)}]  # noqa: E731
+    country = lambda *names: {"facetParameter": "locationCountry", "values": [{"descriptor": n, "id": n[:2]} for n in names]}  # noqa: E731
+    places = lambda *names: {"facetParameter": "locations", "values": [{"descriptor": n, "id": n[:3]} for n in names]}  # noqa: E731
+    assert _workday_india(group(country("United States", "India"), places("Austin, Texas"))) == {"locationCountry": ["In"]}
+    assert _workday_india(group(country("United States of America"), places("Pune, India"))) == {}  # T-Mobile: no India, no jobs
+    assert _workday_india(group(places("Austin, Texas", "Bengaluru, India", "Pune, India"))) == {"locations": ["Ben", "Pun"]}  # Zebra
+    assert _workday_india(group(places("Akron, OH", "Tempe"))) == {}  # LPL: all US cities
+    assert _workday_india([{"facetParameter": "timeType", "values": [{"descriptor": "Full time", "id": "1"}]}]) is None  # check each job
+
+
+def test_amazon_and_capgemini():
+    class Client:
+        def __init__(self, pages):
+            self.pages = pages
+
+        def request(self, method, url, params=None, **kw):
+            body = self.pages.pop(0)
+            return type("R", (), {"json": lambda self: body, "raise_for_status": lambda self: None})()
+
+    since = datetime(2026, 10, 22, tzinfo=timezone.utc)
+    job = lambda n, day: {"id_icims": str(n), "title": "SDE ", "job_path": f"/en/jobs/{n}/sde", "normalized_location": "Bengaluru, Karnataka, IND",  # noqa: E731
+                          "posted_date": f"October {day}, 2026", "description": "Build", "basic_qualifications": "3+ years"}
+    # creation order isn't posted order: a page with one recent job keeps paging, an all-old page stops it
+    jobs = amazon(Client([{"jobs": [job(i, 23 if i == 50 else 10) for i in range(100)]}, {"jobs": [job(100 + i, 10) for i in range(100)]},
+                          {"jobs": [job(999, 24)]}]), "IND", since)
+    assert len(jobs) == 200 and jobs[0].url == "https://www.amazon.jobs/en/jobs/0/sde" and jobs[0].title == "SDE"
+    assert "Basic qualifications</h3>3+ years" in jobs[0].description and jobs[0].posted_at == datetime(2026, 10, 10, tzinfo=timezone.utc)
+    cg = capgemini(Client([{"total": 1, "data": [{"id": "1-en_GB", "title": "Developer", "apply_job_url": "https://careers.capgemini.com/job/x/1/?utm_source=a",
+                                                   "location": "Pune", "indexed_at": "2026-10-24T08:00:00.000Z", "description": "<p>JD</p>"}]}]), "in-en", since)
+    assert [(j.external_id, j.url, j.posted_at.date().isoformat()) for j in cg] == [("1-en_GB", "https://careers.capgemini.com/job/x/1/", "2026-10-24")]
+
+
 def test_parse_dt():
     now = datetime.now(timezone.utc)
     assert parse_dt("2026-10-16T00:00:00.000+0000") == datetime(2026, 10, 16, tzinfo=timezone.utc)
@@ -79,6 +112,9 @@ def test_parse_dt():
     assert abs(parse_dt("Posted Yesterday") - (now - timedelta(days=1))) < timedelta(minutes=1)
     assert abs(parse_dt("Posted 30+ Days Ago") - (now - timedelta(days=30))) < timedelta(minutes=1)
     assert parse_dt("Posted Today") > now - timedelta(minutes=1)
+    assert abs(parse_dt("Data Engineering Bangalore Posted 2 years ago") - (now - timedelta(days=730))) < timedelta(minutes=1)
+    assert abs(parse_dt("3 weeks ago") - (now - timedelta(days=21))) < timedelta(minutes=1)
+    assert parse_dt("5 hours ago") > now - timedelta(minutes=1)
     assert parse_dt(None) is None and parse_dt("soon") is None
     assert parse_dt("24 October 2026") == parse_dt("Oct 24, 2026") == datetime(2026, 10, 24, tzinfo=timezone.utc)
 
@@ -86,7 +122,8 @@ def test_parse_dt():
 def test_in_india():
     for loc, country in [("Bengaluru-VTP, India", ""), ("hyderabad", ""), ("Remote", ""), ("", ""), ("2 Locations", ""),
                          ("Krakow, Poland / Bangalore, India", "PL"), ("anything", "IN"),
-                         ("Hoskote, IN, 562114", ""), ("Nashik, MH, IN", ""), ("Bhubaneswar, IND-21, IND, 751024", "")]:
+                         ("Hoskote, IN, 562114", ""), ("Nashik, MH, IN", ""), ("Bhubaneswar, IND-21, IND, 751024", ""),
+                         ("Multiple Locations", "")]:
         assert in_india(loc, country), (loc, country)
     for loc, country in [("Dallas, Texas, United States", ""), ("Europe Remote", ""), ("Remote", "US"), ("Indianapolis, IN", ""),
                          ("Indianapolis, IN, 46204", "")]:

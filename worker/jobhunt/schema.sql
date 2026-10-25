@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS resumes (
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 INSERT OR IGNORE INTO settings (key, value) VALUES
   ('interval_min',   '60'),
-  ('max_age_days',   '3'),
+  ('max_age_days',   '2'),
   ('retention_days', '7'),
   ('min_score',      '35'),   -- queue a job when the judge's fit probability is >= this % (rule: judge.wanted)
   ('title_include',  '["engineer", "engineering", "developer", "sde", "software", "backend", "back-end", "frontend", "front-end", "full stack", "full-stack", "fullstack", "data", "machine learning", "ml", "ai", "genai", "llm", "devops", "sre", "cloud", "platform", "python", "programmer", "technical staff", "mts", "intern", "internship", "graduate", "trainee", "fresher", "research"]'),
