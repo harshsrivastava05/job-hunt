@@ -23,9 +23,10 @@ def test_gates():
     assert gate({**_job(), "posted_at": None, "first_seen_at": now(UTC - timedelta(days=4))}, CFG, UTC)[0] == "stale"
     for loc in ("", "India", "Bengaluru, Karnataka, India", "Pune, Maharashtra, India", "Gurugram", "Remote"):
         assert gate(_job(location=loc), CFG, UTC) is None, loc  # anywhere in India
-    for title in ("SDE 1", "AI Engineer", "Software Developer Intern", "Data Engineer", "Member of Technical Staff"):
+    for title in ("SDE 1", "SDE-1", "AI Engineer", "Software Developer Intern", "Data Engineer", "Member of Technical Staff", "AI or ML Engineer 2395441"):
         assert gate(_job(title), CFG, UTC) is None, title
-    for title in ("Senior Backend Engineer", "Sr. Software Engineer", "Engineering Manager", "Principal Engineer", "Account Executive", "Chartered Accountant"):
+    for title in ("Senior Backend Engineer", "Sr. Software Engineer", "Engineering Manager", "Principal Engineer", "Account Executive", "Chartered Accountant",
+                  "SDE-2", "SDE II", "Software Engineer II", "Software Engineer - II, AI/ML", "Technical Support Engineer-2", "Platform Software Engineer 2", "Software Engineer III"):
         assert gate(_job(title), CFG, UTC) == ("filtered", "title"), title
 
 
@@ -39,12 +40,39 @@ def test_job_page_date_stops_old_undated_jobs():
         row = lambda jd, posted=None: {"jd": jd, "posted_at": posted, "title": "SDE", "companies": "X", "location": ""}  # noqa: E731
         assert judge._judge(row("Data Engineering Bangalore Posted 2 years ago. Python, Spark"), "cv", cutoff)[1] is None
         assert judge._judge(row("Posted: 2024-05-01 We build payment rails"), "cv", cutoff)[1] is None  # JSON-LD datePosted
-        assert judge._judge(row("Date posted: Oct 25, 2026. Backend role"), "cv", cutoff)[1] == {"fit": 0.9}
+        assert judge._judge(row(f"Date posted: {UTC:%b %d, %Y}. Backend role"), "cv", cutoff)[1] == {"fit": 0.9}
         assert judge._judge(row("Backend role, no date anywhere"), "cv", cutoff)[1] == {"fit": 0.9}
         assert judge._judge(row("Posted 2 years ago", now(UTC)), "cv", cutoff)[1] == {"fit": 0.9}  # the list's own date wins
     finally:
         judge.describe, decide.decide = real
     assert len(calls) == 3
+
+
+def test_closed_jobs_leave_the_queue():
+    conn = connect(":memory:")
+    listed = now(UTC)
+    for sid, ats in [(1, "greenhouse"), (2, "generic_js"), (3, "workday")]:
+        conn.execute("INSERT INTO sources (id, url, ats, last_ok_at) VALUES (?, ?, ?, ?)", (sid, f"https://x{sid}.com", ats, listed))
+    ago = lambda h: now(UTC - timedelta(hours=h))  # noqa: E731
+    for i, sid, seen, applied in [
+        (1, 1, ago(7), "queued"),    # off a full-list board for 7 h: closed
+        (2, 1, listed, "opened"),    # still listed
+        (3, 2, ago(7), "queued"),    # a rendered company page: 7 h unlisted can be a different subset on each load
+        (4, 2, ago(25), "opened"),   # unlisted for a day: closed
+        (5, 3, ago(30), "queued"),   # Workday reads newest-first only, so unlisted means nothing; its API says closed
+        (6, 3, ago(30), "queued"),   # its API says open
+        (7, 1, ago(30), "applied"),  # applied jobs are history
+    ]:
+        conn.execute("INSERT INTO jobs (id, source_id, external_id, url, title, first_seen_at, last_seen_at, status, apply_status)"
+                     " VALUES (?, ?, ?, 'u', 't', ?, ?, 'matched', ?)", (i, sid, str(i), seen, seen, applied))
+    real = judge.closed
+    judge.closed = lambda r: True if r["id"] == 5 else False if r["ats"] == "workday" else None
+    try:
+        assert judge.close_gone(conn) == 3
+    finally:
+        judge.closed = real
+    got = dict(conn.execute("SELECT id, coalesce(apply_status, status) FROM jobs").fetchall())
+    assert got == {1: "closed", 2: "opened", 3: "queued", 4: "closed", 5: "closed", 6: "queued", 7: "applied"}, got
 
 
 def test_purge_keeps_cursor_and_applied():
@@ -99,7 +127,8 @@ def test_settings_apply_without_rejudging():
         (6, "Backend Engineer", "filtered", None, '{"gate": "location"}'),     # reopened, then judged
         (7, "Infra Engineer", "rejected", None, json.dumps({"fit": 0.6, "skills": 0.9, "role": 0.9, "india": 0.3})),  # abroad: stays out
         (8, "Software Developer Jobs", "matched", "queued", json.dumps({"fit": 0.61, "skills": 0.73, "role": 0.91, "experience": 0.9, "posting": 0.07})),  # category page
-        (9, "Data Engineer III", "rejected", None, v(0.8, 0.9, 0.95, exp=0.05)),  # asks 4+ years: stays out however well it fits
+        (9, "Data Engineer", "rejected", None, v(0.8, 0.9, 0.95, exp=0.05)),  # asks 3+ years: stays out however well it fits
+        (10, "SDE-2", "matched", "queued", v(0.8, 0.9, 0.95)),                # a level-2 title, judged before the keyword: leaves
     ]:
         conn.execute("INSERT INTO jobs (id, source_id, external_id, url, title, location, first_seen_at, last_seen_at, status, apply_status, verdict)"
                      " VALUES (?, 1, ?, 'u', ?, 'Pune', ?, ?, ?, ?, ?)", (i, str(i), title, now(UTC), now(UTC), status, applied, verdict))
@@ -108,7 +137,8 @@ def test_settings_apply_without_rejudging():
     assert judge_pending(conn) == 1
     got = {r[0]: tuple(r[1:]) for r in conn.execute("SELECT id, status, apply_status FROM jobs")}
     assert got == {1: ("matched", "queued"), 2: ("matched", "queued"), 3: ("rejected", None), 4: ("rejected", None),
-                   5: ("matched", "applied"), 6: ("matched", "queued"), 7: ("rejected", None), 8: ("rejected", None), 9: ("rejected", None)}, got
+                   5: ("matched", "applied"), 6: ("matched", "queued"), 7: ("rejected", None), 8: ("rejected", None), 9: ("rejected", None),
+                   10: ("filtered", None)}, got
 
 
 if __name__ == "__main__":

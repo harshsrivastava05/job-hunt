@@ -10,9 +10,9 @@ A personal job watcher. It checks a few hundred company career pages every hour,
    - **Anything else** goes to a generic reader: JSON-LD first, else the decision model picks out which links on the page are job openings. A page that shows no jobs as plain HTML is rendered once in headless Chromium, and kept that way if its jobs only appear after scripts run.
    - **India only.** Every source is filtered to jobs in India.
 3. **Cursor.** Every job a source has listed is remembered, so a job is processed once. The first check of a source is a baseline: jobs already open aren't judged unless they were posted in the last 2 days. The first time a page lists anything also counts as a baseline, since an empty first check is often a page that didn't render. An unchanged page costs nothing.
-4. **Free filters, then the model.** New jobs are dropped for free if older than 2 days (the list's date, else a date on the job's own page, else when it was first seen), if the title doesn't match the include/exclude keywords, or if it's a repost. The rest go to [TypeSafe Jev](https://typesafe.ai) (or OpenAI's Decisions API) with the resume. It returns six yes/no probabilities: `fit`, `skills`, `experience` (open to under 4 years?), `role` (hands-on software role), `india` and `posting` (one real job, not a category page).
-5. **Queue.** A job is queued when it's a single software posting in India that asks for under 4 years of experience, and either fit ≥ the cutoff (35% by default) or the skills match is ≥ 80%. The full job description is always fetched first: summaries and teasers from job lists don't count. A Windows notification goes out for new matches.
-6. **Housekeeping.** Once a day the app removes jobs older than 7 days and keeps the last 7 daily backups.
+4. **Free filters, then the model.** New jobs are dropped for free if older than 2 days (the list's date, else a date on the job's own page, else when it was first seen), if the title doesn't match the include/exclude keywords, or if it's a repost. The rest go to [TypeSafe Jev](https://typesafe.ai) (or OpenAI's Decisions API) with the resume. It returns six yes/no probabilities: `fit`, `skills`, `experience` (open to someone with 2 years or less?), `role` (hands-on software role), `india` and `posting` (one real job, not a category page).
+5. **Queue.** A job is queued when it's a single software posting in India that asks for 2 years of experience or less (titles like SDE 2 or Engineer II are skipped for free), and either fit ≥ the cutoff (35% by default) or the skills match is ≥ 80%. The full job description is always fetched first: summaries and teasers from job lists don't count. The queue sorts by best match or newest first. A Windows notification goes out for new matches.
+6. **Housekeeping.** Every 6 hours, queued and opened jobs that their board has closed are taken out (board API, the job page, or a job missing from a full list), so links never lead to a dead page. Once a day the app removes jobs older than 7 days and keeps the last 7 daily backups.
 
 ## Setup (Windows)
 
@@ -36,7 +36,7 @@ To remove it, run `install-windows.ps1 -Uninstall`.
 
 ## Using it
 
-- **Queue page:** open the **Job Hunt** shortcut, or `http://127.0.0.1:8000`. The shortcut starts the app first if it isn't running.
+- **Queue page:** open the **Job Hunt** shortcut, or `http://127.0.0.1:41873`. The shortcut starts the app first if it isn't running.
   - **Tabs:** Queue / Opened / Applied / Skipped, with keys `j k o a s u`.
   - **Sources:** health of every career page, check now, pause.
   - **Settings:** resume upload, CSV/XLSX import, cutoff, keyword lists, intervals.
@@ -47,7 +47,7 @@ To remove it, run `install-windows.ps1 -Uninstall`.
   - `python -m jobhunt.judge --sample 30`: a spread of verdicts.
 - **Self-checks:** `python test_ats.py`, `test_worker.py`, `test_judge.py`, `test_importer.py` and `test_app.py`. They run offline.
 
-The page is bound to 127.0.0.1. It also refuses unknown `Host` headers and cross-site POSTs. For phone access, use Tailscale (`tailscale serve --bg 8000`) rather than opening a port.
+The page is bound to 127.0.0.1. It also refuses unknown `Host` headers and cross-site POSTs. For phone access, use Tailscale (`tailscale serve --bg 41873`) rather than opening a port.
 
 ## Repo layout
 
@@ -55,7 +55,7 @@ The page is bound to 127.0.0.1. It also refuses unknown `Host` headers and cross
 PLAN.md                    design notes, measurements and phase-by-phase status
 worker/install-windows.ps1 login task + shortcuts
 worker/jobhunt/
-  app.py        local web server + background watcher (the thing that runs)
+  app.py        local web server; starts the watcher as its own process (the thing that runs)
   worker.py     scheduler loop, cursor, offline/sleep handling, notifications
   ats.py        job-board detection + one adapter per platform
   generic.py    company-built pages: JSON-LD, decision-model link extraction, headless browser

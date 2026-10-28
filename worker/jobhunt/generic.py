@@ -60,12 +60,15 @@ class Page(HTMLParser):
     def __init__(self, base):
         super().__init__()
         self.base, self.links, self.text, self.jsonld = base, [], [], []
-        self._href, self._atext, self._skip, self._script, self._recent = None, [], None, None, []
+        self.row_link = {}  # text in a table row -> the row's only link (job tables put the link on a code, the title beside it)
+        self._href, self._atext, self._skip, self._script, self._recent, self._row = None, [], None, None, [], None
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
         if tag == "a":
             self._href, self._atext = a.get("href"), []
+        elif tag == "tr":
+            self._row = ([], [])
         elif tag in ("script", "style", "noscript", "svg", "template"):
             self._skip = tag
             self._script = [] if a.get("type") == "application/ld+json" else None
@@ -84,7 +87,15 @@ class Page(HTMLParser):
                 if not ROLE.search(text):  # the text near a bare "Apply" was a date, city or "Full Time": the URL often names the role
                     text = _slug_title(url) or text
                 self.links.append((url, text))
+                if self._row is not None:
+                    self._row[0].append(url)
             self._href = None
+        elif tag == "tr" and self._row is not None:
+            links, texts = self._row
+            if len(set(links)) == 1:
+                for t in texts:
+                    self.row_link.setdefault(t, links[0])
+            self._row = None
         elif tag == self._skip:
             if self._script is not None:
                 self.jsonld.append("".join(self._script))
@@ -100,6 +111,8 @@ class Page(HTMLParser):
             self._atext.append(data)
         elif data.strip():
             self._recent = (self._recent + [" ".join(data.split())])[-3:]  # title / location / team above a link
+        if self._row is not None and data.strip():
+            self._row[1].append(" ".join(data.split()))
 
 
 def _slug_title(url):
@@ -118,6 +131,7 @@ def parse(base, page_html, into=None):
         into.links += p.links
         into.text += p.text
         into.jsonld += p.jsonld
+        into.row_link = {**p.row_link, **into.row_link}
         return into
     return p
 
@@ -244,35 +258,49 @@ def decided_jobs(p):
     jobs = []
     for k, (u, t) in zip(keys, items):
         if probs.get(k, 0) >= 0.6 and not re.search(r"\bjobs$", t, re.I):  # 0.5 is the model shrugging; "DevOps Jobs" is a category
-            url = u or canon(p.base)
+            url = u or p.row_link.get(t) or canon(p.base)
             dated = ats.AGO.search(t)  # a card's "Posted 2 years ago" is often part of its link text
             jobs.append(Job(_id(p.base, url, t), t, url, posted_at=parse_dt(dated[0]) if dated else None))
-    linked = {j.title.lower() for j in jobs if j.url != canon(p.base)}  # same role as text and as a link: keep the link
-    return [j for j in jobs if j.url != canon(p.base) or j.title.lower() not in linked]
+    base, linked = canon(p.base), {}
+    for j in jobs:  # a row's code link ("J0926-2010") and its title line can both be picked: keep the one that reads like a role
+        if j.url != base and (j.url not in linked or (ROLE.search(j.title) and not ROLE.search(linked[j.url].title))):
+            linked[j.url] = j
+    titles = {j.title.lower() for j in linked.values()}  # same role as text and as a link: keep the link
+    return list(linked.values()) + [j for j in jobs if j.url == base and j.title.lower() not in titles]
 
 
 def fetch(url, js=False):
     """-> (Page, used_browser). Plain HTTP unless the page is a JS shell or blocks plain clients."""
+    plain = None
     if not js:
         try:
             with ats.client() as c:
                 r = c.get(url)
             if r.status_code < 400:
-                p = parse(str(r.url), r.text)
-                if len(" ".join(_lines(p)).split()) >= 150 or len(p.links) >= 25:
-                    return p, False
+                plain = parse(str(r.url), r.text)
+                if len(" ".join(_lines(plain)).split()) >= 150 or len(plain.links) >= 25:
+                    return plain, False
         except httpx.HTTPError:  # e.g. a server missing its intermediate cert: browsers cope, Python's ssl doesn't
             pass
-    with ats.browser_page(url, wait="load") as (pg, _):
-        pg.wait_for_timeout(2500)
-        pg.mouse.wheel(0, 30000)  # lazy-loaded lists
-        pg.wait_for_timeout(1500)
-        p = None
-        for f in pg.frames:  # job boards are often iframes
-            try:
-                p = parse(f.url, f.content(), into=p) if p else parse(pg.url, f.content())
-            except Exception:  # frame detached mid-read
+    try:
+        with ats.browser_page(url) as (pg, _):
+            try:  # some pages never fire "load" (a request that never ends): don't fail on it, just wait a bit
+                pg.wait_for_load_state("load", timeout=15_000)
+            except Exception:
                 pass
+            pg.wait_for_timeout(2500)
+            pg.mouse.wheel(0, 30000)  # lazy-loaded lists
+            pg.wait_for_timeout(1500)
+            p = None
+            for f in pg.frames:  # job boards are often iframes
+                try:
+                    p = parse(f.url, f.content(), into=p) if p else parse(pg.url, f.content())
+                except Exception:  # frame detached mid-read
+                    pass
+    except Exception:
+        if plain:  # bot protection that lets plain HTTP through but not a browser (Akamai at ITC Infotech): use what we got
+            return plain, False
+        raise
     return p or Page(url), True
 
 
@@ -293,12 +321,18 @@ def crawl(url, js=False, prev_hash=None, follow=True):
         jobs = heuristic_jobs(p) if mode == "heuristic" else decided_jobs(p)
     updates = {"ats": "generic_js" if js else "generic"}
     if not jobs and not js:  # a page with enough text to pass as loaded, whose job list only appears once scripts run
-        rendered = crawl(url, True, prev_hash, follow=False)
+        try:
+            rendered = crawl(url, True, prev_hash, follow=False)
+        except Exception:  # bot protection that lets plain HTTP through but not a browser (Persistent, ITC Infotech)
+            rendered = (None,)
         if rendered[0]:  # from now on the source is read in the browser
             return rendered
     if not jobs and follow:  # a landing page: find the real job list once and remember it as the source's key
         for link in job_links(p, 2):
-            sub_jobs, sub_hash, sub_updates = crawl(link, False, None, follow=False)
+            try:
+                sub_jobs, sub_hash, sub_updates = crawl(link, False, None, follow=False)
+            except Exception:  # a dead "View openings" link (Ola's points at an internal server) mustn't fail the page itself
+                continue
             if sub_jobs:
                 return sub_jobs, sub_hash, {**sub_updates, "ats_key": link}
     return [j for j in jobs if in_india(j.location)], h, updates

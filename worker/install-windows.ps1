@@ -29,7 +29,7 @@ $every10 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (Ne
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -MultipleInstances IgnoreNew -StartWhenAvailable
 Register-ScheduledTask -TaskName $name -Action $action -Trigger $atLogon, $every10 -Settings $settings -Force `
-    -Description "Watches career pages for new jobs and queues the good ones: http://127.0.0.1:8000" | Out-Null
+    -Description "Watches career pages for new jobs and queues the good ones: http://127.0.0.1:41873" | Out-Null
 
 New-Item -Path $aumid -Force | Out-Null
 New-ItemProperty -Path $aumid -Name DisplayName -Value "Job Hunt" -PropertyType String -Force | Out-Null
@@ -47,4 +47,4 @@ foreach ($path in $shortcuts) {
 }
 
 Start-ScheduledTask -TaskName $name
-"Installed and running. Queue: http://127.0.0.1:8000 (or the 'Job Hunt' shortcut). Log: $HOME\.jobhunt\jobhunt.log"
+"Installed and running. Queue: http://127.0.0.1:41873 (or the 'Job Hunt' shortcut). Log: $HOME\.jobhunt\jobhunt.log"

@@ -6,6 +6,7 @@ and stops paging once results are older than `since` where the board sorts newes
 import html
 import json
 import re
+import ssl
 import threading
 from collections import Counter
 from contextlib import contextmanager
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin, urlsplit
 
+import certifi
 import httpx
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
@@ -30,9 +32,14 @@ class Job:
     description: str = ""  # only when the list API includes it
 
 
+# A new client loads the CA bundle into a fresh SSL context: ~250 ms of CPU, which was most of what a check cost.
+# One context, shared (they're thread-safe), makes a client free.
+SSL = ssl.create_default_context(cafile=certifi.where())
+
+
 def client():
     return httpx.Client(
-        headers={"User-Agent": UA, "Accept-Language": "en-IN,en;q=0.9"}, follow_redirects=True, timeout=30
+        headers={"User-Agent": UA, "Accept-Language": "en-IN,en;q=0.9"}, follow_redirects=True, timeout=30, verify=SSL
     )
 
 
@@ -53,7 +60,9 @@ def browser_page(url, wait="domcontentloaded"):
     with _BROWSERS, sync_playwright() as p:
         b = p.chromium.launch()
         try:
-            pg = b.new_page(user_agent=UA, locale="en-IN")  # the default UA says HeadlessChrome and gets blocked
+            # the default UA says HeadlessChrome and gets blocked; an expired certificate (MedPlus, Wow Labz) doesn't
+            # matter when we only read public job lists
+            pg = b.new_page(user_agent=UA, locale="en-IN", ignore_https_errors=True)
             urls = []
             pg.on("request", lambda r: urls.append(r.url))
             # job lists are text: skipping images, video and fonts saves most of the bandwidth
@@ -342,8 +351,8 @@ def pyjamahr(c, key, since):
         for j in d.get("results", []):
             loc = j.get("location") or ""
             if in_india(loc):
-                link = (
-                    f"https://app.pyjamahr.com/careers?{key}&job_id={j['id']}"
+                link = (  # without company= (any value) and is_careers_page the job page redirects to PyjamaHR's login
+                    f"https://app.pyjamahr.com/careers?company=jobs&{key}&is_careers_page=true&job_id={j['id']}"
                     if key.startswith("company_uuid")
                     else f"https://jobs.pyjamahr.com/{key.split('=', 1)[1]}"
                 )
@@ -509,7 +518,7 @@ def _sf_api(c, origin, d, since):
             loc = _sf_location(j)
             if in_india(loc):
                 title = j.get("unifiedStandardTitle") or j.get("urlTitle") or ""
-                url = f"{origin}/job/{j.get('unifiedUrlTitle') or j.get('urlTitle')}/{j['id']}-en_US/"
+                url = f"{origin}/job/{html.unescape(j.get('unifiedUrlTitle') or j.get('urlTitle'))}/{j['id']}-en_US/"  # HCLTech's slugs carry &amp;
                 jobs.append(Job(str(j["id"]), html.unescape(title), url, loc, posted))
         seen, page = seen + len(batch), page + 1
         # "newest first" is only roughly so: stop once a whole page is older than since
@@ -632,9 +641,29 @@ def capgemini(c, key, since):
     return jobs
 
 
+def zwayam(c, key, since):
+    """Zwayam career sites (Cyient, Coforge), whose pages are browser-blocked by Akamai but whose search API isn't.
+    key: '<site root>|<company id>'; the id is the base64 COMPANYID in the site's main.*.js. Newest-modified first, 10 a page."""
+    root, company = key.split("|")
+    jobs, start = [], 0
+    while start < MAX_JOBS:
+        filters = {"paginationStartNo": start, "selectedCall": "sort", "sortCriteria": {"name": "modifiedDate", "isAscending": False}, "anyOfTheseWords": ""}
+        d = _json(c, "POST", "https://public.zwayam.com/jobs/search",
+                  files={"filterCri": (None, json.dumps(filters)), "domain": (None, urlsplit(root).netloc), "companyId": (None, company)})["data"]
+        hits = [h["_source"] for h in d.get("data") or []]
+        for s in hits:
+            if in_india(s.get("location") or ""):
+                jobs.append(Job(str(s["id"]), s["jobTitle"].strip(), f"{root.rstrip('/')}/jobview/{s['jobUrl']}", s.get("location") or "",
+                                parse_dt(s.get("createdDate")), s.get("mediumDescriptionWithoutHtml") or ""))
+        start += len(hits)
+        if not hits or not d.get("hasMoreData") or _older(parse_dt(hits[-1].get("modifiedDate")), since):
+            break
+    return jobs
+
+
 ADAPTERS = {f.__name__: f for f in (
     workday, greenhouse, lever, ashby, smartrecruiters, workable, keka, darwinbox, kula, zoho, freshteam,
-    pyjamahr, turbohire, trakstar, oraclehcm, eightfold, phenom, successfactors, icims, amazon, capgemini,
+    pyjamahr, turbohire, trakstar, oraclehcm, eightfold, phenom, successfactors, icims, amazon, capgemini, zwayam,
 )}
 
 
@@ -648,7 +677,7 @@ PATTERNS = [
     ("greenhouse", r"boards-api\.greenhouse\.io/v1/boards/([\w-]+)"),
     ("lever", r"(?<![\w.])(?:jobs\.(?:eu\.)?lever\.co|api\.lever\.co/v0/postings)/([\w-]+(?:\.[a-z]+)?)"),  # slugs like oaknorth.ai
     ("ashby", r"(?:jobs\.ashbyhq\.com|api\.ashbyhq\.com/posting-api/job-board)/([\w.-]+)"),
-    ("smartrecruiters", r"(?:careers|jobs|join)\.smartrecruiters\.com/(?:my-applications/)?([a-z][\w-]*)"),
+    ("smartrecruiters", r"(?:careers|jobs|join)\.smartrecruiters\.com/(?:my-applications/|oneclick-ui/company/)?([a-z][\w-]*)"),
     ("workable", r"apply\.workable\.com/(?:api/v\d/(?:widget/)?accounts/)?([\w-]+)"),
     ("keka", r"(?<![\w-])([\w-]+)\.keka\.com/careers/api/embedjobs/(?:js/)?(?:default/active/)?(" + UUID + ")"),
     ("keka", r"(?<![\w-])([\w-]+)\.keka\.com/careers"),
@@ -674,7 +703,7 @@ PATTERNS = [
 ]
 JUNK = {
     "wday", "login", "assets", "embed", "cdn", "api", "j", "app", "static", "www", "w", "jsapi", "careerhub",
-    "my-applications", "vs-errors", "trust", "community", "docs", "cdn-cgi", "hp-sandbox",
+    "my-applications", "vs-errors", "trust", "community", "docs", "cdn-cgi", "hp-sandbox", "oneclick-ui",
 }
 
 

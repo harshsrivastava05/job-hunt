@@ -58,9 +58,12 @@ def decide(kind, state, questions):
     return {k: answers.get(k) for k in questions}
 
 
+_HTTP = httpx.Client(timeout=60)  # one client for all calls: a new one per call costs ~250 ms of CPU (it reloads the CA bundle)
+
+
 def _post(url, key, body):
     for attempt in range(4):
-        r = httpx.post(url, json=body, headers={"Authorization": f"Bearer {key}"}, timeout=60)
+        r = _HTTP.post(url, json=body, headers={"Authorization": f"Bearer {key}"})
         if r.status_code in (429, 500, 502, 503, 504) and attempt < 3:
             time.sleep(2 * 2**attempt)
             continue

@@ -36,10 +36,10 @@ Many `careers_url`s are landing pages, not the job list. The one-time classifier
  │   └─ pythonw -m jobhunt.app   (one process, below-normal priority)           │
  │        ├─ watcher thread ──► career pages / board APIs      (outbound)       │
  │        │                └──► TypeSafe Jev / OpenAI Decisions (outbound)      │
- │        └─ http://127.0.0.1:8000  queue page + JSON API (this laptop only)    │
+ │        └─ http://127.0.0.1:41873  queue page + JSON API (this laptop only)    │
  │   ~/.jobhunt/  jobhunt.db (SQLite, WAL) · backups/ · jobhunt.log             │
  ──────────────────────────────────────────────────────────────────────────────────
-   Phone (optional): Tailscale on laptop + phone, then `tailscale serve --bg 8000`
+   Phone (optional): Tailscale on laptop + phone, then `tailscale serve --bg 41873`
 ```
 
 **Data location:** the data lives in `~/.jobhunt`, outside the project folder.
@@ -124,9 +124,9 @@ New jobs pass through gates, cheapest first. Only the survivors cost money:
    - **Provider:** TypeSafe **Jev** (`POST api.typesafe.ai/v1/systemone`, model `jev-latest`) by default. OpenAI **Decisions API** (`POST /v1/decisions`, `gpt-6-luna`) is the fallback via `DECISION_PROVIDER=openai`.
    - **Input:** `state` = rubric + resume, then the job (title, company, location, description).
    - **Questions:** six yes/no ("noul") questions, each returning a probability:
-     - `fit`: credible applicant, **leaving aside experience asks of up to 3 years** (your rule, 2026-10-24).
+     - `fit`: credible applicant, **leaving aside experience asks of up to 2 years** (your rule, tightened 2026-10-26).
      - `skills`, `experience` and `role` are the ✓/✗ reasons shown on the queue card.
-     - `experience`: "open to someone with under 4 years?" Measured on real JDs: asks of 4+ years ≤ 0.07; 0–3 years, internships and unstated ≥ 0.77.
+     - `experience`: "open to someone with at most 2 years?" (a range starting at 2 or less counts; SDE 2 / Engineer II levels are a no). Measured on real JDs (2026-10-26): 3+ years and level-2 titles ≤ 0.07; 0–2 years, internships and unstated ≥ 0.73. The title keywords also skip "II", "III", "SDE 2", "Engineer 2" and similar for free.
      - `india` (based in India or remote-open-to-India?) drops foreign jobs from company pages that show no location. Measured: abroad ≤ 0.31, India ≥ 0.94.
      - `posting` (one specific job, not a list/category page?) drops category pages that read like roles. Measured: category ≤ 0.11, real postings ≥ 0.55.
    - **Queue rule** (`judge.wanted`): `role ≥ 50%`, `experience ≥ 50%`, `india ≥ 50%`, `posting ≥ 30%`, and (`fit ≥ min_score` (35%) or `skills ≥ 80%`) → `matched`, `apply_status = queued`.
@@ -202,8 +202,8 @@ New jobs pass through gates, cheapest first. Only the survivors cost money:
   - a Task Scheduler task "Job Hunt", run at login and relaunched every 10 min (ignored while running), so a crash heals itself;
   - no time limit, runs on battery, below-normal priority;
   - "Job Hunt" shortcuts (see Phase 7).
-- **Run by hand instead:** `cd worker && .venv\Scripts\python -m jobhunt.app`. A second copy refuses to start (port 8000 is taken).
-- **Queue page** at `http://127.0.0.1:8000`:
+- **Run by hand instead:** `cd worker && .venv\Scripts\python -m jobhunt.app`. A second copy refuses to start (port 41873 is taken).
+- **Queue page** at `http://127.0.0.1:41873`:
   - **Tabs:** Queue / Opened / Applied / Skipped, with Open ↗ (marks opened), Applied, Skip, Undo, and keys `j k o a s u`.
   - **Sources:** health per page, filter, check now, pause.
   - **Settings:** resume upload, CSV/XLSX import, cutoff, age window, retention, interval, keyword lists.
@@ -251,7 +251,7 @@ New jobs pass through gates, cheapest first. Only the survivors cost money:
   - **Fix:** `describe()` now fetches the real JD (Oracle HCM details API, Phenom page data, JSON-LD, browser render).
   - **Re-judge:** 70 jobs. E.g. Zensar Python Developer 45% → 5% (asks 6+ yrs Python, 2+ GenAI), Honeywell Software Engr II 38% → 2%.
 - **Category pages:** EPAM's "Software Developer Jobs" (a category page) passed both Jev steps. Added the `posting` question; it was backfilled on all matched jobs.
-- **Experience rule (your call):** up to 3 years OK, 4+ blocked. 333 jobs from the last 7 days re-judged ($0.04). Queue: 9 → 24, every one under 4 years.
+- **Experience rule (your call):** up to 3 years OK, 4+ blocked. 333 jobs from the last 7 days re-judged ($0.04). Queue: 9 → 24, every one under 4 years. **Tightened 2026-10-26:** up to 2 years OK, 3+ and SDE 2 / Engineer II levels blocked; the queue went 50 → 30.
 - **Company-built pages with jobs (174), judged title by title.** Fixed:
   - titles taken from dates, cities or "Full Time" next to a bare "Apply" now come from the job URL's slug;
   - "share on X" links are no longer jobs;
@@ -306,5 +306,5 @@ New jobs pass through gates, cheapest first. Only the survivors cost money:
   - Notion and Cloudflare bot checks outlast the browser's ~4 s wait.
 
 ## Optional from you
-- **Phone access:** install Tailscale on the laptop and phone (same account), then run `tailscale serve --bg 8000` once on the laptop.
+- **Phone access:** install Tailscale on the laptop and phone (same account), then run `tailscale serve --bg 41873` once on the laptop.
 - **Jev credit:** expires 2026-11-19. Before then, set `DECISION_PROVIDER=openai` in `worker/.env` or top up.

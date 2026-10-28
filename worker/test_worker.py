@@ -148,6 +148,23 @@ def test_page_whose_jobs_need_scripts_is_rendered():
     assert [j.title for j in jobs] == ["Platform Engineer"] and updates == {"ats": "generic_js"}, (jobs, updates)
 
 
+def test_job_table_title_takes_its_rows_link():
+    """CGI's njoyn table: the link is on the job code, the title is plain text in the next cell."""
+    page = parse("https://cgi.njoyn.com/CORP/xweb/xweb.asp?page=joblisting", """<table>
+      <tr><td><a href="xweb.asp?Page=JobDetails&Jobid=J0926-2010">J0926-2010</a></td><td>SSE Data Engineer</td><td>Bangalore</td></tr>
+      <tr><td><a href="xweb.asp?Page=JobDetails&Jobid=J1026-2284">J1026-2284</a></td><td>Python Developer</td><td>Hyderabad</td></tr></table>""")
+    real = decide.decide
+    decide.decide = lambda kind, state, questions: {k: 0.9 for k in questions}  # the model picks code links and titles alike
+    try:
+        jobs = decided_jobs(page)
+    finally:
+        decide.decide = real
+    assert sorted((j.title, j.url) for j in jobs) == [
+        ("Python Developer", "https://cgi.njoyn.com/CORP/xweb/xweb.asp?Page=JobDetails&Jobid=J1026-2284"),
+        ("SSE Data Engineer", "https://cgi.njoyn.com/CORP/xweb/xweb.asp?Page=JobDetails&Jobid=J0926-2010"),
+    ], jobs
+
+
 def test_canon_and_aggregators():
     a = "https://www.linkedin.com/jobs/view/sde-at-acme-4374162161?position=1&pageNum=0&refId=LgO%2F1&trackingId=OCGs"
     b = "https://www.linkedin.com/jobs/view/sde-at-acme-4374162161?position=1&pageNum=0&refId=4HqR&trackingId=4ScT"

@@ -1,7 +1,7 @@
 """Run: python test_ats.py (or pytest). Offline: detection, date parsing, India filter."""
 from datetime import datetime, timedelta, timezone
 
-from jobhunt.ats import _sf_html, _workday_india, amazon, capgemini, detect, in_india, parse_dt
+from jobhunt.ats import _sf_html, _workday_india, amazon, capgemini, detect, in_india, parse_dt, zwayam
 
 
 def test_detect_picks_real_boards():
@@ -30,6 +30,7 @@ def test_detect_key_shapes():
         "https://eofe.fa.us2.oraclecloud.com:443/hcmUI/CandidateExperience/en/sites/BNY-Careers/jobs": ("oraclehcm", "eofe.fa.us2.oraclecloud.com|BNY-Careers"),
         "https://x.fa.ocs.oraclecloud.com:443/hcmUI/CandidateExperience/images?id=1": ("oraclehcm", "x.fa.ocs.oraclecloud.com|CX_1"),
         "https://join.smartrecruiters.com/Experian/59c5-join-our-community": ("smartrecruiters", "Experian"),
+        "https://jobs.smartrecruiters.com/oneclick-ui/company/Finmo/job/7443/apply": ("smartrecruiters", "Finmo"),
         '<a href="https://careers.zohocorp.com/jobs/Careers/123/x">': ("zoho", "careers.zohocorp.com"),
         "https://apply.hp.com/careers?start=0&pid=44240108&sort_by=timestamp": ("eightfold", "apply.hp.com|hp.com"),
     }
@@ -81,7 +82,7 @@ def test_workday_india_filter():
     assert _workday_india([{"facetParameter": "timeType", "values": [{"descriptor": "Full time", "id": "1"}]}]) is None  # check each job
 
 
-def test_amazon_and_capgemini():
+def test_api_readers():
     class Client:
         def __init__(self, pages):
             self.pages = pages
@@ -101,6 +102,12 @@ def test_amazon_and_capgemini():
     cg = capgemini(Client([{"total": 1, "data": [{"id": "1-en_GB", "title": "Developer", "apply_job_url": "https://careers.capgemini.com/job/x/1/?utm_source=a",
                                                    "location": "Pune", "indexed_at": "2026-10-24T08:00:00.000Z", "description": "<p>JD</p>"}]}]), "in-en", since)
     assert [(j.external_id, j.url, j.posted_at.date().isoformat()) for j in cg] == [("1-en_GB", "https://careers.capgemini.com/job/x/1/", "2026-10-24")]
+    hit = lambda i, loc, modified: {"_source": {"id": i, "jobTitle": "Developer ", "jobUrl": f"developer-{i}", "location": loc,  # noqa: E731
+                                                "createdDate": 1793005298000, "modifiedDate": modified, "mediumDescriptionWithoutHtml": "JD"}}
+    zw = zwayam(Client([{"data": {"hasMoreData": True, "data": [hit(1, "Bangalore", 1793006854000), hit(2, "Utah, USA", 1793006854000)]}},
+                        {"data": {"hasMoreData": True, "data": [hit(3, "Pune", 1700000000000)]}}]), "https://careers.x.com/x/|MTE=", since)
+    # US jobs dropped; paging stops at the first page that ends before since (newest-modified first)
+    assert [(j.external_id, j.url) for j in zw] == [("1", "https://careers.x.com/x/jobview/developer-1"), ("3", "https://careers.x.com/x/jobview/developer-3")]
 
 
 def test_parse_dt():

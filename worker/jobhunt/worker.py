@@ -9,7 +9,9 @@ bootstrapped_at makes the first crawl a baseline (only jobs posted inside max_ag
 """
 import hashlib
 import json
+import multiprocessing
 import random
+import re
 import sys
 import threading
 import time
@@ -110,6 +112,9 @@ def save(conn, src, out, ts, cfg):
     return result, new
 
 
+OFFLINE = re.compile(r"getaddrinfo failed|ERR_NAME_NOT_RESOLVED|ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|ConnectError|ConnectTimeout")
+
+
 def online():
     try:
         httpx.head("https://www.gstatic.com/generate_204", timeout=10)
@@ -130,10 +135,16 @@ def tick(conn, everything=False, verbose=False):
     if srcs and not online():  # a laptop just out of sleep: don't fail (and back off) every source for want of Wi-Fi
         print(f"{ts} offline: {len(srcs)} sources wait for the next pass", flush=True)
         return stats
+    net = {}
     with ThreadPoolExecutor(8) as ex:
         futures = {ex.submit(run, s, since): s for s in srcs}
         for f in as_completed(futures):
             src, out = futures[f], f.result()
+            # Wi-Fi dropped mid-pass (2026-10-28: 58 pages failed on DNS in one pass): not the page's fault, so no
+            # failure and no back-off; it stays due and is retried next pass
+            if "error" in out and OFFLINE.search(out["error"]) and not net.setdefault("up", online()):
+                stats["offline"] += 1
+                continue
             with conn:
                 result, new = save(conn, src, out, ts, cfg)
             stats[result] += 1
@@ -160,7 +171,13 @@ def loop():
     """Forever: crawl what's due, judge what's new, notify about new matches, daily purge; idle a minute when there's nothing to do."""
     conn = connect()
     queued = lambda: {r[0] for r in conn.execute("SELECT id FROM jobs WHERE apply_status = 'queued'")}  # noqa: E731
+    checked_open = 0.0
+    app = multiprocessing.parent_process()  # the page server, when the app started us; None when run by hand
     while True:
+        # ponytail: an app killed mid-pass leaves this pass running beside a new app's watcher for up to one pass;
+        # a lock file if that overlap ever matters
+        if app and not app.is_alive():
+            return
         try:
             before = queued()
             stats, judged = tick(conn), judge.judge_pending(conn)
@@ -170,6 +187,10 @@ def loop():
                 notify.new_matches(conn, fresh)
             busy = sum(stats.values()) + judged
             judge.daily(conn)
+            if time.time() - checked_open > 6 * 3600:  # queued and opened jobs the boards have closed since
+                checked_open = time.time()
+                if n := judge.close_gone(conn):
+                    print(f"{now()} {n} queued/opened jobs closed on their boards", flush=True)
         except Exception:  # one bad pass (a bug in an adapter, a locked DB) must not stop the watcher
             traceback.print_exc()
             busy = 0

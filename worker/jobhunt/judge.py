@@ -4,7 +4,7 @@ Usage: python -m jobhunt.judge [--limit N]   # judge pending jobs now
        python -m jobhunt.judge --sample 30   # a spread of verdicts, to sanity-check min_score
 
 Statuses: stale (older than max_age_days) | filtered (title gate) | duplicate (same title, same source)
-          | matched (see wanted(), queued) | rejected | error (model refused).
+          | matched (see wanted(), queued) | rejected | error (model refused) | closed (the board took it down, see close_gone).
 Location isn't gated: the boards are already filtered to India, and anywhere in India is fine.
 """
 import json
@@ -21,13 +21,15 @@ from jobhunt.db import DB_PATH, connect, now
 
 RUBRIC = "You screen job postings for one candidate and judge only from the candidate's resume."
 QUESTIONS = {  # see wanted() for how they combine; skills/experience/role are the reasons shown on the queue card
-    # the user applies to jobs asking up to 3 years, so fit must not mark those down; 4+ years is the experience gate's job
-    "fit": "Leaving aside any experience requirement of up to 3 years, is the candidate a credible applicant for this job: "
+    # the user applies to jobs asking up to 2 years, so fit must not mark those down; 3+ years is the experience gate's job
+    "fit": "Leaving aside any experience requirement of up to 2 years, is the candidate a credible applicant for this job: "
            "do their skills, projects and education match what the role needs?",
     "skills": "Does the candidate's resume show most of the core skills this job asks for?",
-    # measured on real JDs: asks of 4+ years <= 0.07; 0-3 years, internships and unstated >= 0.77
-    "experience": "Is this job open to someone with less than 4 years of work experience? Yes if it asks for 0-3 years, is entry-level "
-                  "or an internship, or doesn't say; no if it asks for 4 or more years or is a senior or lead role.",
+    # measured on real JDs (2026-10-26): asks of 3+ years and SDE 2 / Engineer II titles <= 0.07; 0-2 years, ranges
+    # starting at 2 or less (1-3, 2-4), internships and unstated >= 0.73
+    "experience": "Is this job open to someone with at most 2 years of work experience? Yes if it asks for 0-2 years (a range starting "
+                  "at 2 or less, like 1-3 or 2+, counts), is entry-level, new-grad or an internship, or doesn't say; no if it asks for "
+                  "3 or more years, or is a mid-level or higher role such as SDE 2, Software Engineer II, Engineer 2, senior or lead.",
     "role": "Is this a hands-on software role (backend, full-stack, AI/ML or data engineering)?",
     # company pages often show no location, so global companies' foreign jobs get this far (measured: abroad <= 0.31, India >= 0.94)
     "india": "Is this job based in India, or remote and open to candidates who live in India?",
@@ -49,10 +51,14 @@ def gate(row, cfg, utc):
     """Free checks before any paid call -> (status, reason), or None to send the job to the judge."""
     if (row["posted_at"] or row["first_seen_at"]) < now(utc - timedelta(days=cfg["max_age_days"])):
         return "stale", "older than max_age_days"
+    return ("filtered", "title") if title_blocked(row["title"], cfg) else None
+
+
+def title_blocked(title, cfg):
+    """Fails the keyword lists. Excludes are also tried on the title with punctuation as spaces, so 'sde 2' and
+    'engineer 2' catch 'SDE-2' and 'Engineer-2'."""
     exclude, include = _words(cfg["title_exclude"]), _words(cfg["title_include"])
-    if (exclude and exclude.search(row["title"])) or (include and not include.search(row["title"])):
-        return "filtered", "title"
-    return None
+    return bool((exclude and (exclude.search(title) or exclude.search(_norm(title)))) or (include and not include.search(title)))
 
 
 def wanted(p, min_score):
@@ -76,8 +82,11 @@ def resettle(conn, cfg, utc):
             if not gate(r, cfg, utc):
                 conn.execute("UPDATE jobs SET status = 'new', verdict = NULL WHERE id = ?", (r["id"],))
         for r in conn.execute(
-            "SELECT id, status, verdict FROM jobs WHERE status = 'rejected' OR (status = 'matched' AND apply_status = 'queued')"
+            "SELECT id, title, status, verdict FROM jobs WHERE status = 'rejected' OR (status = 'matched' AND apply_status = 'queued')"
         ).fetchall():
+            if r["status"] == "matched" and title_blocked(r["title"], cfg):  # a keyword added in Settings takes it out of the queue too
+                conn.execute("UPDATE jobs SET status = 'filtered', apply_status = NULL WHERE id = ?", (r["id"],))
+                continue
             want = wanted(json.loads(r["verdict"]), cfg["min_score"])
             if want != (r["status"] == "matched"):  # opened/applied/skipped jobs are the user's: never moved
                 conn.execute("UPDATE jobs SET status = ?, apply_status = ? WHERE id = ?", ("matched", "queued", r["id"]) if want else ("rejected", None, r["id"]))
@@ -222,6 +231,56 @@ def judge_pending(conn, limit=500, workers=4):
     if failures:
         print(f"judge: {len(failures)} failed, e.g. {failures[0]}", flush=True)
     return done
+
+
+# boards whose whole list is read on every check, so a job missing from it has been taken down. The others page
+# newest-first and stop at max_age_days, so their older jobs go unlisted while still open.
+FULL_LIST = {"greenhouse", "lever", "ashby", "workable", "keka", "darwinbox", "kula", "zoho", "freshteam", "pyjamahr", "turbohire",
+             "trakstar", "phenom", "capgemini", "generic", "generic_js"}
+CLOSED = re.compile(r"no longer (?:available|accepting|open)|doesn.t exist|not available at this time|position has been filled"
+                    r"|job (?:has )?(?:expired|closed)|this job is closed", re.I)
+
+
+def closed(row):
+    """True if the board has taken the job down, False if it's still up, None when we can't tell (a script-only page)."""
+    try:
+        with ats.client() as c:
+            if row["ats"] == "workday":  # the job's own API: 404 once it's gone, or 403 on some tenants (Illumina, Genpact)
+                host, tenant, site = row["ats_key"].split("|")
+                api = f"https://{host}/wday/cxs/{tenant}/{site}"
+                status = c.get(api + row["external_id"]).status_code
+                if status == 403:  # closed, unless the whole board refuses us: ask for its job list to tell which
+                    return c.post(api + "/jobs", json={"appliedFacets": {}, "limit": 1, "offset": 0, "searchText": ""}).status_code == 200 or None
+                return True if status in (404, 410) else False if status == 200 else None
+            if row["ats"] == "oraclehcm":  # the details API returns no item for a closed requisition
+                host, site = row["ats_key"].split("|")
+                params = {"onlyData": "true", "finder": f'ById;Id="{row["external_id"]}",siteNumber={site}'}
+                return not ats._json(c, "GET", f"https://{host}/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails", params=params).get("items")
+            r = c.get(row["url"])
+    except (httpx.HTTPError, ValueError, KeyError):
+        return None
+    if r.status_code in (404, 410) or re.search(r"closedjob|jobnotfound|job-not-found", str(r.url), re.I) or CLOSED.search(r.text[:50_000]):
+        return True
+    return None
+
+
+def close_gone(conn):
+    """Take jobs the boards have closed out of the queue and the Opened tab, so their links never lead to a dead page.
+    Applied jobs stay as history."""
+    rows = conn.execute(
+        "SELECT j.*, s.ats, s.ats_key, s.last_ok_at AS listed_at FROM jobs j JOIN sources s ON s.id = j.source_id"
+        " WHERE j.apply_status IN ('queued', 'opened')"
+    ).fetchall()
+    utc = datetime.now(timezone.utc)
+    # missing from several checks, not a one-off glitch. Company pages get a day: a rendered page (IBM's) shows a different
+    # subset of its jobs from one load to the next
+    since = lambda r: now(utc - timedelta(hours=24 if r["ats"] in ("generic", "generic_js") else 6))  # noqa: E731
+    gone = [r["id"] for r in rows if r["ats"] in FULL_LIST and r["last_seen_at"] < r["listed_at"] and r["last_seen_at"] < since(r)]
+    with ThreadPoolExecutor(4) as ex:
+        gone += [r["id"] for r, shut in zip(rows, ex.map(closed, rows)) if shut and r["id"] not in gone]
+    with conn:
+        conn.executemany("UPDATE jobs SET status = 'closed', apply_status = NULL WHERE id = ?", [(i,) for i in gone])
+    return len(gone)
 
 
 def purge(conn, retention_days):

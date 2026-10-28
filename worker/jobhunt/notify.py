@@ -7,7 +7,7 @@ import os
 import subprocess
 from xml.sax.saxutils import escape
 
-PAGE = f"http://127.0.0.1:{os.environ.get('JOBHUNT_PORT', '8000')}/"
+PAGE = f"http://127.0.0.1:{os.environ.get('JOBHUNT_PORT', '41873')}/"
 AUMID = "JobHunt.Watcher"  # registered with the name "Job Hunt" by install-windows.ps1
 _SHOW = (
     "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null;"

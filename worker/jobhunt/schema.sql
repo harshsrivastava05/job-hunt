@@ -88,4 +88,4 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('retention_days', '7'),
   ('min_score',      '35'),   -- queue a job when the judge's fit probability is >= this % (rule: judge.wanted)
   ('title_include',  '["engineer", "engineering", "developer", "sde", "software", "backend", "back-end", "frontend", "front-end", "full stack", "full-stack", "fullstack", "data", "machine learning", "ml", "ai", "genai", "llm", "devops", "sre", "cloud", "platform", "python", "programmer", "technical staff", "mts", "intern", "internship", "graduate", "trainee", "fresher", "research"]'),
-  ('title_exclude',  '["senior", "sr", "principal", "lead", "manager", "director", "head", "architect", "vp", "vice president", "sales", "presales", "pre-sales", "account executive", "recruiter"]');
+  ('title_exclude',  '["senior", "sr", "principal", "lead", "manager", "director", "head", "architect", "vp", "vice president", "sales", "presales", "pre-sales", "account executive", "recruiter", "ii", "iii", "iv", "sde 2", "sde2", "sde 3", "sde3", "swe 2", "swe 3", "engineer 2", "engineer 3", "developer 2", "developer 3"]');

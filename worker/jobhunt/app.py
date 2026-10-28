@@ -1,31 +1,31 @@
-"""The laptop app: the watcher in a background thread + the queue page at http://127.0.0.1:8000.
+"""The laptop app: the queue page at http://127.0.0.1:41873 + the watcher in its own background process.
 
 Usage: python -m jobhunt.app          # with a console; logs to the terminal
        pythonw -m jobhunt.app         # what the Windows login task runs: no window, logs to ~/.jobhunt/jobhunt.log
        pythonw -m jobhunt.app --open  # the desktop shortcut: start it if it isn't running, then open the page
 
-Bound to 127.0.0.1, so only this laptop can reach it. For the phone: `tailscale serve --bg 8000` shares it with
+Bound to 127.0.0.1, so only this laptop can reach it. For the phone: `tailscale serve --bg 41873` shares it with
 your own Tailscale devices only.
 """
 import json
+import multiprocessing
 import os
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import urllib.request
 import webbrowser
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-import httpx
-
 from jobhunt import decide, importer, resume, worker
 from jobhunt.db import DB_PATH, connect, now
 
-PORT = int(os.environ.get("JOBHUNT_PORT", "8000"))
+PORT = int(os.environ.get("JOBHUNT_PORT", "41873"))  # off the usual dev-server ports (8000, 8080, 3000)
 PAGE = Path(__file__).parent / "index.html"
 INR_PER_USD = 96.5  # 2026-10-24; only for showing spend in rupees
 ACTIONS = {"queued", "opened", "applied", "skipped"}
@@ -75,10 +75,11 @@ def usage(conn, since):
 
 def sources(conn):
     return [dict(r) for r in conn.execute(
-        "SELECT s.id, s.url, s.ats, s.active, s.last_ok_at, s.fail_count, s.last_error,"
+        "SELECT s.id, s.url, s.ats, s.active, s.last_ok_at, s.next_check_at, s.fail_count, s.last_error,"
         " (SELECT group_concat(DISTINCT name) FROM companies WHERE source_id = s.id) AS company,"
         " (SELECT count(*) FROM jobs j WHERE j.source_id = s.id AND j.last_seen_at = s.last_ok_at) AS listed"
-        " FROM sources s WHERE EXISTS (SELECT 1 FROM companies c WHERE c.source_id = s.id) ORDER BY s.fail_count > 0 DESC, company"
+        " FROM sources s WHERE EXISTS (SELECT 1 FROM companies c WHERE c.source_id = s.id)"
+        " ORDER BY s.active AND s.fail_count > 0 DESC, s.active DESC, company"  # failing first, paused last
     )]
 
 
@@ -206,11 +207,16 @@ class Server(ThreadingHTTPServer):
     allow_reuse_address = os.name != "nt"  # on Windows it would let a second copy share the port instead of failing
     daemon_threads = True
 
+    def handle_error(self, request, client_address):
+        if not isinstance(sys.exc_info()[1], ConnectionError):  # a closed tab mid-response isn't worth a traceback in the log
+            super().handle_error(request, client_address)
+
 
 def _up():
-    try:
-        return httpx.get(f"http://127.0.0.1:{PORT}/api/status", timeout=3).status_code == 200
-    except httpx.HTTPError:
+    try:  # urllib, not httpx: an httpx client loads the CA bundle (~250 ms) even for a local http:// URL
+        with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/status", timeout=3) as r:
+            return r.status == 200
+    except OSError:
         return False
 
 
@@ -231,7 +237,16 @@ def open_page():
     main()
 
 
+def _watch(log):
+    """The watcher in its own process. As a thread it shared Python's lock with the page server, and parsing pages
+    held it long enough to stall the page for 1-7 s (minutes under a synthetic load). It ends when the app does."""
+    if log:  # pythonw gives the child no stdout either
+        sys.stdout = sys.stderr = open(log, "a", buffering=1, encoding="utf-8")
+    worker.loop()
+
+
 def main():
+    log = None
     if sys.stdout is None:  # pythonw: no console, so log to a file next to the DB (rolled over at 5 MB)
         log = Path(DB_PATH).parent / "jobhunt.log"
         log.parent.mkdir(parents=True, exist_ok=True)
@@ -239,7 +254,7 @@ def main():
             log.replace(log.with_suffix(".log.1"))
         sys.stdout = sys.stderr = open(log, "a", buffering=1, encoding="utf-8")
     server = Server(("127.0.0.1", PORT), Handler)  # raises if a copy is already running: one watcher only
-    threading.Thread(target=worker.loop, name="watcher", daemon=True).start()
+    multiprocessing.Process(target=_watch, args=(log and str(log),), name="watcher", daemon=True).start()
     print(f"{now()} jobhunt running: http://127.0.0.1:{PORT}  (db {DB_PATH})", flush=True)
     server.serve_forever()
 
