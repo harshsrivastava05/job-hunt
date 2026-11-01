@@ -1,4 +1,4 @@
-# Runs the job hunter at every Windows login: hidden, low priority, back within 10 minutes if it dies. Starts it now,
+# Runs the job hunter at every Windows login: hidden, back within 10 minutes if it dies. Starts it now,
 # adds "Job Hunt" shortcuts (desktop + Start menu) that start it if needed and open the queue, and names its notifications.
 # Usage: powershell -ExecutionPolicy Bypass -File install-windows.ps1 [-Uninstall]
 param([switch]$Uninstall)
@@ -25,9 +25,10 @@ $atLogon = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAM
 # Task Scheduler's "restart on failure" doesn't cover a program that dies after starting, so it is also launched
 # every 10 minutes: while it runs those launches are ignored (IgnoreNew), and if it died it comes back
 $every10 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 10)
-# no time limit (the default kills tasks after 3 days), runs on battery; priority stays below normal
+# no time limit (the default kills tasks after 3 days), runs on battery. Priority 6, not the default 7: below-normal
+# stalled the page for minutes after a restart or wake (disk reads starved), the lowest normal level doesn't
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) `
-    -MultipleInstances IgnoreNew -StartWhenAvailable
+    -MultipleInstances IgnoreNew -StartWhenAvailable -Priority 6
 Register-ScheduledTask -TaskName $name -Action $action -Trigger $atLogon, $every10 -Settings $settings -Force `
     -Description "Watches career pages for new jobs and queues the good ones: http://127.0.0.1:41873" | Out-Null
 

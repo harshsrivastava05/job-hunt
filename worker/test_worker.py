@@ -148,6 +148,13 @@ def test_page_whose_jobs_need_scripts_is_rendered():
     assert [j.title for j in jobs] == ["Platform Engineer"] and updates == {"ats": "generic_js"}, (jobs, updates)
 
 
+def test_links_follow_the_base_tag():
+    """Google's job links are relative to <base>: joined to the page URL they doubled /jobs/ and 404ed."""
+    page = parse("https://www.google.com/about/careers/applications/jobs/results",
+                 '<base href="/about/careers/applications/"><a href="jobs/results/123-software-engineer">Software Engineer</a>')
+    assert page.links[0][0] == "https://www.google.com/about/careers/applications/jobs/results/123-software-engineer"
+
+
 def test_job_table_title_takes_its_rows_link():
     """CGI's njoyn table: the link is on the job code, the title is plain text in the next cell."""
     page = parse("https://cgi.njoyn.com/CORP/xweb/xweb.asp?page=joblisting", """<table>

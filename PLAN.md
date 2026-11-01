@@ -266,6 +266,7 @@ New jobs pass through gates, cheapest first. Only the survivors cost money:
   - 110 watchlist companies that had a seed URL (Adobe, Accenture, Cisco, Flipkart, Freshworks…).
   - **257 startups** whose careers page was found automatically: directory website → careers link → verified.
   - **Not found:** 401 startups. 232 have no careers page, 103 have no website listed, 66 sites were down or blocking.
+  - **2026-11-02:** 328 more, mostly Gurugram and Noida, which had none: 1,098 → 1,426 companies. From Inc42's city lists, Flexiple's GCC lists and a hand list, each page checked with `classify` and read by hand.
 
 ### Oracle move (later, optional)
 - **Hosting check (2026-10-24, measured):** Oracle vs your laptop, same requests to every crawl target.

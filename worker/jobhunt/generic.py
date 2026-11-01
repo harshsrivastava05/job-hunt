@@ -60,12 +60,15 @@ class Page(HTMLParser):
     def __init__(self, base):
         super().__init__()
         self.base, self.links, self.text, self.jsonld = base, [], [], []
+        self._link_base = None
         self.row_link = {}  # text in a table row -> the row's only link (job tables put the link on a code, the title beside it)
         self._href, self._atext, self._skip, self._script, self._recent, self._row = None, [], None, None, [], None
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
-        if tag == "a":
+        if tag == "base" and a.get("href") and not self._link_base:  # the first one wins (Google's job links are relative to it)
+            self._link_base = urljoin(self.base, a["href"])
+        elif tag == "a":
             self._href, self._atext = a.get("href"), []
         elif tag == "tr":
             self._row = ([], [])
@@ -83,7 +86,7 @@ class Page(HTMLParser):
                 text = next((t for t in reversed(self._recent) if ROLE.search(t)), self._recent[-1])
             # /cdn-cgi/ is Cloudflare's own (email protection, challenges): a fresh token on every load would change the fingerprint
             if href and not href.startswith(("#", "mailto:", "tel:", "javascript:")) and "/cdn-cgi/" not in href:
-                url = canon(urljoin(self.base, href))
+                url = canon(urljoin(self._link_base or self.base, href))
                 if not ROLE.search(text):  # the text near a bare "Apply" was a date, city or "Full Time": the URL often names the role
                     text = _slug_title(url) or text
                 self.links.append((url, text))
