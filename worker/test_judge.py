@@ -112,6 +112,22 @@ def test_new_resume_requeues_recent_jobs():
     assert conn.execute("SELECT count(*) FROM resumes WHERE active = 1").fetchone()[0] == 1
 
 
+def test_same_job_on_two_sources_is_judged_once():
+    conn = connect(":memory:")
+    conn.execute("INSERT INTO resumes (filename, text) VALUES ('cv', 'python')")
+    for s in (1, 2):
+        conn.execute("INSERT INTO sources (id, url) VALUES (?, ?)", (s, f"https://b{s}.com"))
+    for i, s, url, title in [(1, 1, "https://w/1", "Software Engineer at Acme"), (2, 2, "https://w/1", "Software Engineer at Acme"),
+                             (3, 1, "https://njoyn/list", "Data Engineer"), (4, 1, "https://njoyn/list", "Data Scientist")]:
+        conn.execute("INSERT INTO jobs (id, source_id, external_id, url, title, first_seen_at, last_seen_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'new')",
+                     (i, s, str(i), url, title, now(UTC), now(UTC)))
+    import jobhunt.judge as j
+    j.decide.enabled, j._judge = lambda: True, lambda r, resume, cutoff: ("jd", {"fit": 0.9, "skills": 0.9, "experience": 0.9, "role": 0.9})
+    judge_pending(conn)
+    # two boards listing one job: one verdict. One source whose jobs share a list-page link (CGI): every job judged
+    assert dict(conn.execute("SELECT id, status FROM jobs").fetchall()) == {1: "matched", 2: "duplicate", 3: "matched", 4: "matched"}
+
+
 def test_settings_apply_without_rejudging():
     conn = connect(":memory:")
     conn.execute("INSERT INTO sources (id, url) VALUES (1, 'https://x.com')")
@@ -131,7 +147,7 @@ def test_settings_apply_without_rejudging():
         (10, "SDE-2", "matched", "queued", v(0.8, 0.9, 0.95)),                # a level-2 title, judged before the keyword: leaves
     ]:
         conn.execute("INSERT INTO jobs (id, source_id, external_id, url, title, location, first_seen_at, last_seen_at, status, apply_status, verdict)"
-                     " VALUES (?, 1, ?, 'u', ?, 'Pune', ?, ?, ?, ?, ?)", (i, str(i), title, now(UTC), now(UTC), status, applied, verdict))
+                     " VALUES (?, 1, ?, 'u' || ?, ?, 'Pune', ?, ?, ?, ?, ?)", (i, str(i), i, title, now(UTC), now(UTC), status, applied, verdict))
     import jobhunt.judge as j
     j.decide.enabled, j._judge = lambda: True, lambda r, resume, cutoff: ("jd", {"fit": 0.6, "skills": 0.7, "experience": 0.5, "role": 0.9})
     assert judge_pending(conn) == 1

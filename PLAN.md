@@ -267,6 +267,16 @@ New jobs pass through gates, cheapest first. Only the survivors cost money:
   - **257 startups** whose careers page was found automatically: directory website → careers link → verified.
   - **Not found:** 401 startups. 232 have no careers page, 103 have no website listed, 66 sites were down or blocking.
   - **2026-11-02:** 328 more, mostly Gurugram and Noida, which had none: 1,098 → 1,426 companies. From Inc42's city lists, Flexiple's GCC lists and a hand list, each page checked with `classify` and read by hand.
+  - **2026-11-03: job boards, at your request.** 23 sources:
+    - Instahyre: its search API, for 0 and 1 years in backend, full-stack and data/ML, checked every 3 hours.
+    - YC jobs: India and remote.
+    - We Work Remotely: back-end, full-stack and DevOps feeds, dropping US-only jobs.
+    - Remote Rocketship: the free pages, 20 newest per search, for 10 India searches. Its full API is a paid plan.
+    - micro1: its job portal API.
+    - Wellfound: 5 India role pages.
+    - javascript.jobs: the generic page reader.
+
+    Jobs read "<role> at <company>". The judge treats the same link on two sources as one job.
 
 ### Oracle move (later, optional)
 - **Hosting check (2026-10-24, measured):** Oracle vs your laptop, same requests to every crawl target.
@@ -305,6 +315,7 @@ New jobs pass through gates, cheapest first. Only the survivors cost money:
   - Platforms: classic iCIMS (SAS, Rambus, JAGGAER, EchoStar), BrassRing (UBS), Avature, Pinpoint, Teamtailor, and Juspay's, Globant's and Peoplebox's own APIs.
   - Ola Electric's TurboHire token host returns 503.
   - Notion and Cloudflare bot checks outlast the browser's ~4 s wait.
+  - CGI (Njoyn, behind a Radware bot check): the rendered list gives no per-job links, so every CGI job links to the list page and the judge sees no description. All four queued on 2026-11-03 asked 6+ years. Fix: read the list's JobDetails links in the browser, or skip CGI.
 
 ## Optional from you
 - **Phone access:** install Tailscale on the laptop and phone (same account), then run `tailscale serve --bg 41873` once on the laptop.

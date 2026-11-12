@@ -8,6 +8,7 @@ import json
 import re
 import ssl
 import threading
+import time
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -661,9 +662,172 @@ def zwayam(c, key, since):
     return jobs
 
 
+# ---------------------------------------------------------------- job boards that list many companies (added 2026-11-03)
+
+
+def _at(title, company):
+    """The hiring company goes into the title: the queue shows the board's name as the company, and the judge's
+    same-title check would otherwise take two companies' 'Software Engineer' for one job posted twice."""
+    title, company = (title or "").strip(), (company or "").strip()
+    return f"{title} at {company}" if company else title
+
+
+def instahyre(c, key, since):
+    """Instahyre's public job search (India). key: up to 3 job-function ids, e.g. '10,1,9' (backend, full-stack, data/ML).
+    Not sorted by date and no posting date, so every job for 0 and 1 years of experience is read each time; the job
+    pages sit behind a browser check, so the description is built from the list."""
+    jobs, seen = [], set()
+    for years in (0, 1):
+        offset = 0
+        while offset < MAX_JOBS:
+            params = [("years", years), ("offset", offset)] + [("job_functions", f) for f in key.split(",")]
+            time.sleep(3)  # ~10 quick pages got a 429 (2026-11-03); the source is also checked every 3 hours, not hourly
+            d = _json(c, "GET", "https://www.instahyre.com/api/v1/job_search", params=params)
+            batch = d.get("objects") or []
+            for j in batch:
+                if j["id"] in seen:
+                    continue
+                seen.add(j["id"])
+                e = j.get("employer") or {}
+                desc = (f"<p>Skills: {', '.join(j.get('keywords') or [])}</p><p>Experience: listed for candidates with {years} "
+                        f"year(s) of experience</p><p>About {e.get('company_name', '')}: {e.get('instahyre_note') or ''}</p>")
+                jobs.append(Job(str(j["id"]), _at(j["title"], e.get("company_name")), j["public_url"], j.get("locations") or "", None, desc))
+            offset += len(batch)
+            if not batch or offset >= (d.get("meta") or {}).get("total_count", 0):
+                break
+    return jobs
+
+
+def ycombinator(c, key, since):
+    """YC startups' jobs. key: a list page (ycombinator.com/jobs/location/india). The page embeds its jobs; createdAt is
+    relative ('12 days'). Job pages carry a JSON-LD posting, which the judge reads."""
+    r = c.get(key)
+    r.raise_for_status()
+    m = re.search(r'data-page="([^"]+)"', r.text)
+    if not m:
+        raise ValueError("no job data on the page")
+    jobs = []
+    for j in json.loads(html.unescape(m[1]))["props"]["jobPostings"]:
+        desc = " | ".join(filter(None, [j.get("type"), j.get("minExperience") and f"Experience: {j['minExperience']}", j.get("companyOneLiner")]))
+        jobs.append(Job(str(j["id"]), _at(j["title"], j.get("companyName")), urljoin(key, j["url"]), j.get("location") or "",
+                        parse_dt(f"{j.get('createdAt')} ago"), desc))
+    return jobs
+
+
+def weworkremotely(c, key, since):
+    """We Work Remotely category feeds (RSS). key: the feed URL. Keeps jobs open worldwide or to India/Asia;
+    'USA Only' and the like are dropped."""
+    import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
+
+    r = c.get(key)
+    r.raise_for_status()
+    jobs = []
+    for it in ET.fromstring(r.content).iter("item"):
+        region = it.findtext("region") or ""
+        if re.search(r"\bonly\b", region, re.I) and not re.search(r"india|asia|apac", region, re.I):
+            continue
+        company, _, title = (it.findtext("title") or "").partition(": ")
+        link = it.findtext("link") or it.findtext("guid")
+        posted = parsedate_to_datetime(it.findtext("pubDate")) if it.findtext("pubDate") else None
+        jobs.append(Job(link.rstrip("/").rsplit("/", 1)[-1], _at(title or company, company if title else ""), link,
+                        f"Remote: {region}", posted, it.findtext("description") or ""))
+    return jobs
+
+
+def remoterocketship(c, key, since):
+    """Remote Rocketship's free list pages: the 20 newest jobs of one search (the full API is a paid plan).
+    key: a list page, e.g. /country/india/jobs/software-engineer/. Jobs link to the employer's own posting."""
+    r = c.get(key)
+    r.raise_for_status()
+    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.S)
+    if not m:
+        raise ValueError("no job data on the page")
+    jobs = []
+    for j in json.loads(m[1])["props"]["pageProps"].get("initialJobOpenings") or []:
+        co = j.get("company") or {}
+        url = j.get("url") or f"https://www.remoterocketship.com/company/{co.get('slug')}/jobs/{j['slug']}/"
+        loc = ", ".join(j.get("locationCountries") or [j.get("location") or ""]) + " (remote)"
+        desc = f"<p>{j.get('jobDescriptionSummary') or ''}</p><p>Tech stack: {', '.join(j.get('techStack') or [])}</p>"
+        jobs.append(Job(str(j["id"]), _at(j["roleTitle"], co.get("name")), url, loc, parse_dt(j.get("created_at")), desc))
+    return jobs
+
+
+def micro1(c, key, since):
+    """micro1's job portal: its own expert/contract roles and its clients' jobs, newest first. key: unused ('all')."""
+    jobs, page = [], 1
+    while len(jobs) < MAX_JOBS:
+        d = _json(c, "POST", "https://prod-api.micro1.ai/api/v1/job/portal", params={"page": page, "limit": 100, "keyword": ""},
+                  json={"action": "get_all_jobs", "filters": {}})
+        batch = d.get("data") or []
+        for j in batch:
+            pay = j.get("ideal_hourly_rate") or {}
+            desc = " | ".join(filter(None, [f"Skills: {', '.join(j.get('skills') or [])}", j.get("role_type"), j.get("location_type"),
+                                            pay and f"USD {pay.get('min')}-{pay.get('max')} an hour"]))
+            jobs.append(Job(j["job_id"], _at(j["job_name"], j.get("company_name")), j["apply_url"].split("?")[0], j.get("location_type") or "Remote",
+                            parse_dt(j.get("date_posted")), desc))
+        page += 1
+        if not batch or len(jobs) >= int(d.get("total") or 0) or _older(jobs[-1].posted_at, since):
+            break
+    return jobs
+
+
+def mercor(c, key, since):
+    """Mercor's public listings, all in one call: contract roles someone living in India may take
+    (no country list, or one naming IND, and IND not excluded). key: unused ('all')."""
+    jobs = []
+    for j in _json(c, "GET", "https://aws.api.mercor.com/work/listings-explore-page")["listings"]:
+        ok = [x for k in ("eligibleLocation", "eligibleResidenceLocation") for x in j.get(k) or []]
+        no = [x for k in ("ineligibleLocation", "ineligibleResidenceLocation") for x in j.get(k) or []]
+        if j.get("status") != "active" or j.get("disableApplications") or "IND" in no or (ok and "IND" not in ok):
+            continue
+        lo, hi = j.get("rateMin"), j.get("rateMax")
+        desc = " | ".join(filter(None, [lo and f"USD {lo:g}-{hi or lo:g} {j.get('payRateFrequency') or ''}".strip(),
+                                        j.get("hoursPerWeek") and f"{j['hoursPerWeek']} hours a week", j.get("description")]))
+        jobs.append(Job(j["listingId"], _at(j["title"], j.get("companyName")), f"https://work.mercor.com/jobs/{j['listingId']}",
+                        j.get("location") or "Remote", parse_dt(j.get("postedAt")), desc))
+    return jobs
+
+
+def wellfound(c, key, since):
+    """Wellfound's role-and-location pages (wellfound.com/role/l/backend-engineer/india): the jobs the page embeds,
+    with posting time, years asked and the full description. Applying needs Harsh's Wellfound sign-in."""
+    r = c.get(key)
+    r.raise_for_status()
+    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.S)
+    if not m:
+        raise ValueError("no job data on the page (blocked?)")
+    data = json.loads(m[1])["props"]["pageProps"]["apolloState"]["data"]
+    company = {ref["__ref"]: v.get("name") for v in data.values() if v.get("__typename") == "StartupResult"
+               for ref in v.get("highlightedJobListings") or []}
+    jobs = []
+    for k, j in data.items():
+        if j.get("__typename") != "JobListingSearchResult":
+            continue
+        lo, hi = j.get("yearsExperienceMin"), j.get("yearsExperienceMax")
+        years = f"<p>Experience: {lo}{'-' + str(hi) if hi is not None else '+'} years</p>" if lo is not None else ""
+        loc = " / ".join(j.get("locationNames") or []) + (" (remote: " + ", ".join(j.get("acceptedRemoteLocationNames") or ["any"]) + ")" if j.get("remote") else "")
+        jobs.append(Job(j["id"], _at(j["title"], company.get(k)), f"https://wellfound.com/jobs/{j['id']}-{j['slug']}", loc,
+                        parse_dt(j.get("liveStartAt")), years + (j.get("description") or "")))
+    return jobs
+
+
+# known by the source's own URL only: a company page linking to one of these boards isn't that board (classify())
+BOARD_URLS = [
+    ("instahyre", r"https?://(www\.)?instahyre\.com/", "10,1,9"),
+    ("ycombinator", r"https?://(www\.)?ycombinator\.com/jobs", None),  # None: the key is the URL
+    ("weworkremotely", r"https?://(www\.)?weworkremotely\.com/.*\.rss$", None),
+    ("remoterocketship", r"https?://(www\.)?remoterocketship\.com/", None),
+    ("micro1", r"https?://(www\.|jobs\.)?micro1\.ai/", "all"),
+    ("wellfound", r"https?://(www\.)?wellfound\.com/role/", None),
+    ("mercor", r"https?://(www\.|work\.)?mercor\.com/", "all"),
+]
+
+
 ADAPTERS = {f.__name__: f for f in (
     workday, greenhouse, lever, ashby, smartrecruiters, workable, keka, darwinbox, kula, zoho, freshteam,
     pyjamahr, turbohire, trakstar, oraclehcm, eightfold, phenom, successfactors, icims, amazon, capgemini, zwayam,
+    instahyre, ycombinator, weworkremotely, remoterocketship, micro1, wellfound, mercor,
 )}
 
 

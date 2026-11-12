@@ -180,15 +180,17 @@ def judge_pending(conn, limit=500, workers=4):
         (limit,),
     ).fetchall()
     window = now(utc - timedelta(days=cfg["retention_days"]))
-    twins = {
-        (r["source_id"], _norm(r["title"])): r["id"]
-        for r in conn.execute("SELECT id, source_id, title FROM jobs WHERE status IN ('matched', 'rejected') AND first_seen_at >= ?", (window,))
-    }
+    # twins: same title on the same source; by_url: the same job on two sources (a board and the company page, or two of a
+    # board's searches). Only across sources: one source's jobs can all share a list-page link (CGI's Njoyn)
+    twins, by_url = {}, {}
+    for r in conn.execute("SELECT id, source_id, title, url FROM jobs WHERE status IN ('matched', 'rejected') AND first_seen_at >= ?", (window,)):
+        twins[(r["source_id"], _norm(r["title"]))], by_url[r["url"]] = r["id"], (r["id"], r["source_id"])
     pending, done = [], 0
     with conn:
         for r in rows:
             g = gate(r, cfg, utc)
-            twin = twins.get((r["source_id"], _norm(r["title"])))
+            same = by_url.get(r["url"])
+            twin = twins.get((r["source_id"], _norm(r["title"]))) or (same[0] if same and same[1] != r["source_id"] else None)
             if g or twin:  # same role posted again (another city, a repost): one verdict is enough
                 status, verdict = g or ("duplicate", None)
                 conn.execute(
@@ -197,7 +199,7 @@ def judge_pending(conn, limit=500, workers=4):
                 )
                 done += 1
             else:
-                twins[(r["source_id"], _norm(r["title"]))] = r["id"]
+                twins[(r["source_id"], _norm(r["title"]))], by_url[r["url"]] = r["id"], (r["id"], r["source_id"])
                 pending.append(r)
 
     failures = []

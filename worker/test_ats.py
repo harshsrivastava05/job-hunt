@@ -1,7 +1,9 @@
 """Run: python test_ats.py (or pytest). Offline: detection, date parsing, India filter."""
 from datetime import datetime, timedelta, timezone
 
-from jobhunt.ats import _sf_html, _workday_india, amazon, capgemini, detect, in_india, parse_dt, zwayam
+import json
+
+from jobhunt.ats import _sf_html, _workday_india, amazon, capgemini, detect, in_india, mercor, micro1, parse_dt, remoterocketship, wellfound, weworkremotely, zwayam
 
 
 def test_detect_picks_real_boards():
@@ -108,6 +110,51 @@ def test_api_readers():
                         {"data": {"hasMoreData": True, "data": [hit(3, "Pune", 1700000000000)]}}]), "https://careers.x.com/x/|MTE=", since)
     # US jobs dropped; paging stops at the first page that ends before since (newest-modified first)
     assert [(j.external_id, j.url) for j in zw] == [("1", "https://careers.x.com/x/jobview/developer-1"), ("3", "https://careers.x.com/x/jobview/developer-3")]
+
+
+def test_job_boards():
+    class Client:  # .get() pages for the page readers, .request() JSON for the API ones
+        def __init__(self, pages):
+            self.pages = pages
+
+        def get(self, url, **kw):
+            body = self.pages.pop(0)
+            return type("R", (), {"text": body, "content": body.encode(), "raise_for_status": lambda self: None})()
+
+        def request(self, method, url, **kw):
+            body = self.pages.pop(0)
+            return type("R", (), {"json": lambda self: body, "raise_for_status": lambda self: None})()
+
+    since = datetime(2026, 10, 30, tzinfo=timezone.utc)
+    item = lambda slug, title, region: (f"<item><title>{title}</title><region>{region}</region><pubDate>Mon, 02 Nov 2026 18:18:39 +0000</pubDate>"  # noqa: E731
+                                        f"<link>https://weworkremotely.com/remote-jobs/{slug}</link><description>JD</description></item>")
+    feed = "<rss><channel>" + item("a-dev", "Acme: Backend Developer", "Anywhere in the World") + item("b-dev", "Beta: Developer", "USA Only") + "</channel></rss>"
+    # US-only jobs dropped; the company joins the title
+    assert [(j.external_id, j.title, j.posted_at.day) for j in weworkremotely(Client([feed]), "feed", since)] == [("a-dev", "Backend Developer at Acme", 2)]
+    page = '<script id="__NEXT_DATA__" type="application/json">' + json.dumps({"props": {"pageProps": {"initialJobOpenings": [
+        {"id": 7, "roleTitle": "Software Engineer", "company": {"name": "Smartsheet", "slug": "smartsheet"}, "url": "https://boards.greenhouse.io/x/jobs/1",
+         "location": "India", "created_at": "2026-11-02T18:32:46.87+00:00", "slug": "se"}]}}}) + "</script>"
+    rr = remoterocketship(Client([page]), "page", since)
+    assert [(j.title, j.url, j.location) for j in rr] == [("Software Engineer at Smartsheet", "https://boards.greenhouse.io/x/jobs/1", "India (remote)")]
+    job = lambda i, day: {"job_id": str(i), "job_name": "AI Engineer", "company_name": "micro1", "date_posted": f"2026-10-{day} 10:00:00",  # noqa: E731
+                          "apply_url": f"https://jobs.micro1.ai/post/{i}?utm_source=micro1", "skills": ["Python"]}
+    # newest first: paging stops at a page that ends before since
+    m1 = micro1(Client([{"total": 300, "data": [job(i, 31) for i in range(99)] + [job(99, 20)]}, {"total": 300, "data": [job(100, 31)]}]), "all", since)
+    assert len(m1) == 100 and m1[0].url == "https://jobs.micro1.ai/post/0" and m1[0].location == "Remote"
+    state = {"StartupResult:1": {"__typename": "StartupResult", "name": "CredX", "highlightedJobListings": [{"__ref": "JobListingSearchResult:9"}]},
+             "JobListingSearchResult:9": {"__typename": "JobListingSearchResult", "id": "9", "slug": "backend-engineer", "title": "Backend engineer",
+                                          "locationNames": ["Hyderabad"], "remote": False, "liveStartAt": 1793262625, "yearsExperienceMin": 1,
+                                          "yearsExperienceMax": 3, "description": "Build APIs"}}
+    wf = wellfound(Client(['<script id="__NEXT_DATA__">' + json.dumps({"props": {"pageProps": {"apolloState": {"data": state}}}}) + "</script>"]), "page", since)
+    assert [(j.title, j.url, j.description) for j in wf] == [("Backend engineer at CredX", "https://wellfound.com/jobs/9-backend-engineer",
+                                                              "<p>Experience: 1-3 years</p>Build APIs")]
+    lst = lambda i, **kw: {"listingId": i, "title": "SWE", "status": "active", "postedAt": "2026-11-05T06:07:50", "rateMin": 30.0, "rateMax": 45.0,  # noqa: E731
+                           "payRateFrequency": "hourly", "location": "Remote", "description": "Write tasks", **kw}
+    # open to India: no country list, or one naming IND; IND excluded, other-country-only and closed listings dropped
+    mc = mercor(Client([{"listings": [lst("a"), lst("b", eligibleLocation=["IND", "USA"]), lst("c", eligibleLocation=["COL"]),
+                                       lst("d", ineligibleResidenceLocation=["IND"]), lst("e", status="closed")]}]), "all", since)
+    assert [j.external_id for j in mc] == ["a", "b"] and mc[0].url == "https://work.mercor.com/jobs/a"
+    assert mc[0].description == "USD 30-45 hourly | Write tasks" and mc[0].posted_at.day == 5
 
 
 def test_parse_dt():

@@ -5,6 +5,7 @@ Usage: python -m jobhunt.classify [--all | --source ID]   (default: sources not 
 ats = an adapter name, 'generic' (fetchable, no known board), or NULL with last_error (blocked/dead).
 The worker also calls classify() for newly imported sources, so this CLI is only for re-checking.
 """
+import re
 import sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -19,6 +20,10 @@ from jobhunt.db import connect
 def classify(url):
     """-> (ats, key, jobs_found, note)"""
     since = datetime.now(timezone.utc) - timedelta(days=7)
+    for name, pat, key in ats.BOARD_URLS:
+        if re.match(pat, url, re.I):
+            with ats.client() as c:
+                return name, key or url, len(ats.ADAPTERS[name](c, key or url, since)), ""
     notes, final, loaded = [], url, False
     with ats.client() as c:
         cands = []
