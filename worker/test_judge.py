@@ -99,7 +99,8 @@ def test_new_resume_requeues_recent_jobs():
     conn = connect(":memory:")
     conn.execute("INSERT INTO sources (id, url) VALUES (1, 'https://x.com')")
     for i, status, applied, seen in [(1, "matched", "queued", now(UTC)), (2, "rejected", None, now(UTC)), (3, "matched", "applied", now(UTC)),
-                                     (4, "rejected", None, now(UTC - timedelta(days=10))), (5, "filtered", None, now(UTC))]:
+                                     (4, "rejected", None, now(UTC - timedelta(days=10))), (5, "filtered", None, now(UTC)),
+                                     (6, "matched", "opened", now(UTC)), (7, "matched", "closed", now(UTC))]:  # handed to Harsh / closed: keep
         conn.execute("INSERT INTO jobs (id, source_id, external_id, url, title, first_seen_at, last_seen_at, status, apply_status)"
                      " VALUES (?, 1, ?, 'u', 't', ?, ?, ?, ?)", (i, str(i), seen, seen, status, applied))
     rid, requeued = add(conn, "cv.txt", ("python fastapi " * 60).encode())

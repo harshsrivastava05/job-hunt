@@ -28,6 +28,12 @@ from jobhunt.classify import classify
 from jobhunt.db import connect, now
 
 GENERIC = ("generic", "generic_js")
+BEAT = None  # the app's shared clock: stamped on every bit of progress, so the app can restart a hung watcher
+
+
+def beat():
+    if BEAT is not None:
+        BEAT.value = time.time()
 _LIMITS = defaultdict(lambda: threading.Semaphore(3))  # per board API or site: one pass can't hammer a host
 
 
@@ -140,6 +146,7 @@ def tick(conn, everything=False, verbose=False):
         futures = {ex.submit(run, s, since): s for s in srcs}
         for f in as_completed(futures):
             src, out = futures[f], f.result()
+            beat()
             # Wi-Fi dropped mid-pass (2026-10-28: 58 pages failed on DNS in one pass): not the page's fault, so no
             # failure and no back-off; it stays due and is retried next pass
             if "error" in out and OFFLINE.search(out["error"]) and not net.setdefault("up", online()):
@@ -178,9 +185,12 @@ def loop():
         # a lock file if that overlap ever matters
         if app and not app.is_alive():
             return
+        beat()
         try:
             before = queued()
-            stats, judged = tick(conn), judge.judge_pending(conn)
+            stats = tick(conn)
+            judged = judge.judge_pending(conn)
+            beat()
             if stats or judged:
                 print(f"{now()} checked {dict(stats)}, judged {judged}", flush=True)
             if fresh := queued() - before:

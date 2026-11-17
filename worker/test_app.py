@@ -61,6 +61,29 @@ def test_api():
     server.shutdown()
 
 
+def _hung_watcher(log, beat):  # top level, so the spawned child can import it: records its start, then never beats
+    with open(log, "a") as f:
+        f.write(f"{os.getpid()}\n")
+    threading.Event().wait()
+
+
+def test_hung_watcher_is_restarted():
+    import time
+    from jobhunt import app
+    starts = os.path.join(tempfile.mkdtemp(), "starts.txt")
+    app.STUCK_S, app.POLL_S = 2, 0.5
+    threading.Thread(target=app._supervise, args=(starts, _hung_watcher), daemon=True).start()
+    deadline = time.time() + 40
+    while time.time() < deadline and (not os.path.exists(starts) or len(open(starts).read().split()) < 2):
+        time.sleep(0.5)
+    pids = open(starts).read().split()
+    assert len(pids) >= 2, pids  # killed and started again
+    gone = "INFO" in __import__("subprocess").run(["tasklist", "/FI", f"PID eq {pids[0]}"], capture_output=True, text=True).stdout
+    assert gone, f"hung watcher {pids[0]} still running"
+
+
 if __name__ == "__main__":
     test_api()
     print("ok test_api")
+    test_hung_watcher_is_restarted()
+    print("ok test_hung_watcher_is_restarted")

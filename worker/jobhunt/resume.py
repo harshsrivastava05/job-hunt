@@ -28,8 +28,8 @@ def add(conn, filename, data: bytes):
         rid = conn.execute("INSERT INTO resumes (filename, pdf, text) VALUES (?, ?, ?)", (filename, data if is_pdf else None, text)).lastrowid
         requeued = conn.execute(
             "UPDATE jobs SET status = 'new', score = NULL, verdict = NULL, apply_status = NULL"
-            " WHERE status IN ('matched', 'rejected', 'duplicate', 'error') AND apply_status IS NOT 'applied'"
-            " AND apply_status IS NOT 'skipped' AND first_seen_at >= ?",
+            " WHERE status IN ('matched', 'rejected', 'duplicate', 'error') AND (apply_status IS NULL OR apply_status = 'queued')"
+            " AND first_seen_at >= ?",
             (now(datetime.now(timezone.utc) - timedelta(days=max_age)),),
         ).rowcount
     return rid, requeued

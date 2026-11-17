@@ -237,12 +237,38 @@ def open_page():
     main()
 
 
-def _watch(log):
+def _watch(log, beat):
     """The watcher in its own process. As a thread it shared Python's lock with the page server, and parsing pages
     held it long enough to stall the page for 1-7 s (minutes under a synthetic load). It ends when the app does."""
     if log:  # pythonw gives the child no stdout either
         sys.stdout = sys.stderr = open(log, "a", buffering=1, encoding="utf-8")
+    worker.BEAT = beat
     worker.loop()
+
+
+STUCK_S, POLL_S = 3600, 60  # a healthy watcher beats every few minutes (worst gap ~40 min: closed-job checks)
+
+
+def _supervise(log, target=_watch):
+    """Run the watcher; restart it, with the browsers it started, when it dies or stops beating for STUCK_S.
+    2026-11-17: a headless Chromium froze mid-page and the watcher waited on it for 15 h, until a manual restart."""
+    while True:
+        beat = multiprocessing.Value("d", time.time(), lock=False)  # no lock: a watcher killed holding it would hang us
+        p = multiprocessing.Process(target=target, args=(log, beat), name="watcher", daemon=True)
+        p.start()
+        last = time.time()
+        while True:  # sleep first: a watcher that dies at start is retried once a minute, not in a tight loop
+            time.sleep(POLL_S)
+            t = time.time()
+            if t - last > 5 * POLL_S:  # the laptop slept: the watcher gets a fresh allowance, not a kill
+                beat.value = t
+            last = t
+            if not p.is_alive() or t - beat.value > STUCK_S:
+                break
+        print(f"{now()} watcher {'stuck' if p.is_alive() else 'died'}: restarting it", flush=True)
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # /T: its node and Chromium too
+        p.join(30)
 
 
 def main():
@@ -254,7 +280,7 @@ def main():
             log.replace(log.with_suffix(".log.1"))
         sys.stdout = sys.stderr = open(log, "a", buffering=1, encoding="utf-8")
     server = Server(("127.0.0.1", PORT), Handler)  # raises if a copy is already running: one watcher only
-    multiprocessing.Process(target=_watch, args=(log and str(log),), name="watcher", daemon=True).start()
+    threading.Thread(target=_supervise, args=(log and str(log),), name="supervisor", daemon=True).start()
     print(f"{now()} jobhunt running: http://127.0.0.1:{PORT}  (db {DB_PATH})", flush=True)
     server.serve_forever()
 
