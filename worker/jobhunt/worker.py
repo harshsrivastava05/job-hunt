@@ -35,6 +35,13 @@ def beat():
     if BEAT is not None:
         BEAT.value = time.time()
 _LIMITS = defaultdict(lambda: threading.Semaphore(3))  # per board API or site: one pass can't hammer a host
+# ~140 Workday boards checked hourly, 3 at a time, got this connection Cloudflare-challenged on every Workday host
+# (429 "Security Check", 2026-11-16). Workday goes one at a time, every 6 h at most often, and a 429 on a board API
+# pauses all of its boards instead of each one hitting the block in turn.
+_LIMITS["workday"] = threading.Semaphore(1)
+SLOW = {"workday": 360}  # minutes between checks, at least
+PAUSE_S = 6 * 3600
+_PAUSED = {}  # board API -> time.time() when its boards may be tried again
 
 
 def run(src, since):
@@ -47,6 +54,8 @@ def run(src, since):
                 raise RuntimeError(note or "unreachable")
             s["ats"], s["ats_key"] = out["ats"], out["ats_key"] = name, key
         with _LIMITS[urlsplit(s["ats_key"]).netloc if s["ats"] in GENERIC else s["ats"]]:
+            if _PAUSED.get(s["ats"], 0) > time.time():  # checked after the wait: a 429 may have landed meanwhile
+                return {"paused": _PAUSED[s["ats"]]}
             if s["ats"] in GENERIC:
                 jobs, out["hash"], updates = generic.crawl(s["ats_key"], s["ats"] == "generic_js", s["list_hash"])
                 out.update(updates)
@@ -57,12 +66,17 @@ def run(src, since):
         out["jobs"] = jobs
     except Exception as e:
         out["error"] = f"{type(e).__name__}: {str(e).splitlines()[0][:200] if str(e) else ''}"
+        if "429 Too Many Requests" in out["error"] and s["ats"] not in GENERIC:
+            _PAUSED[s["ats"]] = time.time() + PAUSE_S
     return out
 
 
 def save(conn, src, out, ts, cfg):
     """DB half (main thread). Returns ('failed'|'unchanged'|'changed', new_jobs)."""
     sid, utc = src["id"], datetime.now(timezone.utc)
+    if "paused" in out:  # its board API is rate-limiting us: not this board's failure, just try after the pause
+        conn.execute("UPDATE sources SET next_check_at = ? WHERE id = ?", (now(datetime.fromtimestamp(out["paused"], timezone.utc)), sid))
+        return "paused", 0
     if "error" in out:
         fails = src["fail_count"] + 1
         delay = min(cfg["interval_min"] * 2**fails, 24 * 60)  # 2h, 4h, ... 24h; fail_count >= 5 shows as broken
@@ -110,6 +124,7 @@ def save(conn, src, out, ts, cfg):
         new = sum(r[-1] == "new" for r in rows.values())
 
     minutes = (src["interval_min"] or cfg["interval_min"]) * (2 if out.get("ats", src["ats"]) == "generic_js" else 1)
+    minutes = max(minutes, SLOW.get(out.get("ats", src["ats"]), 0))
     conn.execute(
         "UPDATE sources SET list_hash = ?, last_ok_at = ?, fail_count = 0, last_error = NULL,"
         " bootstrapped_at = coalesce(bootstrapped_at, ?), next_check_at = ? WHERE id = ?",

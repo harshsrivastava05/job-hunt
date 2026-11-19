@@ -183,6 +183,33 @@ def test_canon_and_aggregators():
     assert job_links(page) == ["https://acme.com/careers/openings"]
 
 
+def test_rate_limited_board_api_pauses_its_boards():
+    import time
+    from jobhunt import ats, worker
+    from jobhunt.db import now
+    calls = []
+
+    def blocked(c, key, since):
+        calls.append(key)
+        raise RuntimeError("Client error '429 Too Many Requests' for url 'https://x.wd1.myworkdayjobs.com/wday/cxs/x/y/jobs'")
+
+    real, ats.ADAPTERS["workday"] = ats.ADAPTERS["workday"], blocked
+    try:
+        src = {"ats": "workday", "ats_key": "x.wd1.myworkdayjobs.com|x|y", "url": "u", "list_hash": None}
+        assert "error" in worker.run(src, None) and len(calls) == 1
+        out = worker.run(dict(src, ats_key="z.wd5.myworkdayjobs.com|z|y"), None)
+        assert "paused" in out and len(calls) == 1, out  # the next Workday board never reached the API
+    finally:
+        ats.ADAPTERS["workday"] = real
+        worker._PAUSED.clear()
+    conn = connect(":memory:")
+    conn.execute("INSERT INTO sources (id, url, ats, ats_key, fail_count) VALUES (1, 'u', 'workday', 'x', 2)")
+    assert save(conn, _src(conn), out, now(), CFG) == ("paused", 0)
+    assert _src(conn)["fail_count"] == 2 and _src(conn)["next_check_at"] > now()  # a pause isn't the board's failure
+    save(conn, _src(conn), {"jobs": [], "hash": "api:x"}, now(), CFG)  # a good check waits 6 h, not the hourly default
+    assert _src(conn)["next_check_at"] > now(datetime.now(timezone.utc) + timedelta(minutes=300)), _src(conn)["next_check_at"]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
