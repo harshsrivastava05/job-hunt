@@ -78,7 +78,7 @@
   <div id="view"></div>
 </main>
 <script>
-const TABS = [["queued", "Queue"], ["opened", "Opened"], ["applied", "Applied"], ["skipped", "Skipped"], ["sources", "Sources"], ["settings", "Settings"]];
+const TABS = [["queued", "Queue"], ["remote", "Remote / WFH"], ["opened", "Opened"], ["applied", "Applied"], ["skipped", "Skipped"], ["sources", "Sources"], ["settings", "Settings"]];
 const REASONS = [["skills", "Skills"], ["experience", "≤ 2 yrs asked"], ["role", "Software role"]];
 const SORTS = { best: ["Best match", (a, b) => (b.score ?? -1) - (a.score ?? -1) || posted(b).localeCompare(posted(a))],
                 newest: ["Newest first", (a, b) => posted(b).localeCompare(posted(a)) || (b.score ?? -1) - (a.score ?? -1)] };
@@ -86,7 +86,11 @@ const posted = j => j.posted_at || j.first_seen_at || "";
 let tab = "queued", jobs = [], srcs = null, st = null, sel = 0, srcFilter = "", checking = new Set();
 let sortBy = "best";
 try { sortBy = SORTS[localStorage.getItem("sort")] ? localStorage.getItem("sort") : "best"; } catch {}  // remembered per browser
-const tabList = () => jobs.filter(j => j.apply_status === tab).sort(SORTS[sortBy][1]);
+// "Remote / WFH" is a view of the queue, not a status: remote boards already write "Remote" / "India (remote)" into location.
+// ponytail: keyword match on location + title; "Remote, Oregon" next to an onsite city also counts. Use the judge's verdict if that misleads.
+const isRemote = j => /\bremote\b|work[\s-]*from[\s-]*home|\bwfh\b|\banywhere\b/i.test(`${j.location || ""} ${j.title || ""}`);
+const inTab = (j, t) => t === "remote" ? j.apply_status === "queued" && isRemote(j) : j.apply_status === t && !(t === "queued" && isRemote(j));
+const tabList = () => jobs.filter(j => inTab(j, tab)).sort(SORTS[sortBy][1]);
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const safeUrl = u => /^https?:\/\//i.test(u || "") ? u : null;  // scraped links: never javascript: or data:
@@ -117,8 +121,8 @@ async function load() {
 }
 
 function render() {
-  const n = s => jobs.filter(j => j.apply_status === s).length;
-  document.title = n("queued") ? `(${n("queued")}) Job Hunt` : "Job Hunt";
+  const n = s => jobs.filter(j => inTab(j, s)).length, waiting = n("queued") + n("remote");
+  document.title = waiting ? `(${waiting}) Job Hunt` : "Job Hunt";
   const spend = money(st.usage["30 days"].reduce((sum, r) => sum + r.usd, 0));
   document.getElementById("status").textContent =
     `${st.companies_with_jobs} of ${st.companies} companies listing jobs · checked ${ago(st.last_check)} · ` +
@@ -130,7 +134,7 @@ function render() {
     warn.push(`Nothing checked for ${ago(st.last_check).replace(" ago", "")}: offline, or the app is stuck (see ~/.jobhunt/jobhunt.log).`);
   document.getElementById("warnings").innerHTML = warn.map(w => `<div class="warn">${esc(w)}</div>`).join("");
   document.getElementById("tabs").innerHTML = TABS.map(([k, label]) => {
-    const count = ["queued", "opened", "applied", "skipped"].includes(k) ? ` (${n(k)})` : "";
+    const count = ["queued", "remote", "opened", "applied", "skipped"].includes(k) ? ` (${n(k)})` : "";
     return `<button class="${k === tab ? "on" : ""}" data-tab="${k}">${label}${count}</button>`;
   }).join("");
   const view = document.getElementById("view");
@@ -148,13 +152,13 @@ function jobsView() {
 }
 
 function jobCards(list) {
-  if (!list.length) return `<div class="empty">${{ queued: "Queue is empty. New matches show up here as the watcher finds them.", opened: "Nothing opened and waiting.", applied: "No applications yet.", skipped: "Nothing skipped." }[tab]}</div>`;
+  if (!list.length) return `<div class="empty">${{ queued: "Queue is empty. New matches show up here as the watcher finds them.", remote: "No remote or work-from-home jobs waiting.", opened: "Nothing opened and waiting.", applied: "No applications yet.", skipped: "Nothing skipped." }[tab]}</div>`;
   const buttons = {
     queued: [["opened", "Open ↗", "primary"], ["applied", "Applied"], ["skipped", "Skip"]],
     opened: [["opened", "Open ↗", "primary"], ["applied", "Applied"], ["skipped", "Skip"], ["queued", "Back to queue"]],
     applied: [["opened", "Open ↗"], ["queued", "Undo"]],
     skipped: [["queued", "Restore"]],
-  }[tab];
+  }[tab === "remote" ? "queued" : tab];
   return list.map((j, i) => {
     const v = j.verdict || {};
     const chips = REASONS.filter(([k]) => v[k] != null).map(([k, label]) => `<span class="chip ${v[k] >= 0.5 ? "y" : "n"}">${label} ${Math.round(v[k] * 100)}%</span>`).join("");
@@ -301,7 +305,7 @@ document.addEventListener("change", e => {
 
 document.addEventListener("keydown", e => {
   if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName) || e.ctrlKey || e.metaKey || e.altKey) return;
-  if (!["queued", "opened", "applied", "skipped"].includes(tab)) return;
+  if (!["queued", "remote", "opened", "applied", "skipped"].includes(tab)) return;
   const list = tabList(), j = list[sel];
   if (e.key === "j") sel = Math.min(sel + 1, list.length - 1);
   else if (e.key === "k") sel = Math.max(sel - 1, 0);

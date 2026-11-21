@@ -812,6 +812,23 @@ def wellfound(c, key, since):
     return jobs
 
 
+def jobcode(c, key, since):
+    """jobcode.in, a WordPress blog of fresher job posts that Harsh's WhatsApp group "Jobcode" shares (added 2026-11-21).
+    Its REST API lists posts newest first, with the full text: eligibility, batch years and the employer's apply link,
+    which the judge and the apply workers read. key: unused ('all')."""
+    jobs, page = [], 1
+    while len(jobs) < MAX_JOBS:
+        batch = _json(c, "GET", "https://jobcode.in/wp-json/wp/v2/posts",
+                      params={"per_page": 50, "page": page, "_fields": "id,date_gmt,link,title,content"})
+        for p in batch:
+            jobs.append(Job(str(p["id"]), html.unescape(p["title"]["rendered"]), p["link"], "India",
+                            parse_dt(p.get("date_gmt")), p["content"]["rendered"]))
+        page += 1
+        if len(batch) < 50 or _older(jobs[-1].posted_at, since):
+            break
+    return jobs
+
+
 # known by the source's own URL only: a company page linking to one of these boards isn't that board (classify())
 BOARD_URLS = [
     ("instahyre", r"https?://(www\.)?instahyre\.com/", "10,1,9"),
@@ -821,13 +838,14 @@ BOARD_URLS = [
     ("micro1", r"https?://(www\.|jobs\.)?micro1\.ai/", "all"),
     ("wellfound", r"https?://(www\.)?wellfound\.com/role/", None),
     ("mercor", r"https?://(www\.|work\.)?mercor\.com/", "all"),
+    ("jobcode", r"https?://(www\.)?jobcode\.in(/|$)", "all"),
 ]
 
 
 ADAPTERS = {f.__name__: f for f in (
     workday, greenhouse, lever, ashby, smartrecruiters, workable, keka, darwinbox, kula, zoho, freshteam,
     pyjamahr, turbohire, trakstar, oraclehcm, eightfold, phenom, successfactors, icims, amazon, capgemini, zwayam,
-    instahyre, ycombinator, weworkremotely, remoterocketship, micro1, wellfound, mercor,
+    instahyre, ycombinator, weworkremotely, remoterocketship, micro1, wellfound, mercor, jobcode,
 )}
 
 
